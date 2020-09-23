@@ -334,7 +334,7 @@ def main():
         train_criterion = SemiLoss()
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
-        # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
 
         # Train and Validation 
         best_acc = -1
@@ -342,7 +342,7 @@ def main():
             # print('start training')
             loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu)
             print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
-            # scheduler.step()
+            scheduler.step()
 
             # print('start validation')
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
