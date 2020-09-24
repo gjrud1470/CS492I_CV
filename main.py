@@ -150,7 +150,7 @@ def _infer(model, root_path, test_loader=None):
         test_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(root_path, 'test',
                                transform=transforms.Compose([
-                                   transforms.Grayscale(num_output_channels=1),
+                                   transforms.Grayscale(num_output_channels=3),
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
@@ -293,7 +293,7 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids,
                               transform=transforms.Compose([
-                                  transforms.Grayscale(num_output_channels=1),
+                                  transforms.Grayscale(num_output_channels=3),
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
                                   transforms.RandomHorizontalFlip(),
@@ -306,7 +306,7 @@ def main():
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
                               transform=transforms.Compose([
-                                  transforms.Grayscale(num_output_channels=1),
+                                  transforms.Grayscale(num_output_channels=3),
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
                                   transforms.RandomHorizontalFlip(),
@@ -338,7 +338,7 @@ def main():
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5),
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
 
         # Train and Validation 
         best_acc = -1
