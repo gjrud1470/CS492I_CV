@@ -319,6 +319,7 @@ def main():
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
+                                   transforms.Grayscale(num_output_channels=3),
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
@@ -337,8 +338,8 @@ def main():
         train_criterion = SemiLoss()
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
-        # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
+        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
 
         # Train and Validation 
         best_acc = -1
