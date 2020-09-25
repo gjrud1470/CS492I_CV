@@ -199,9 +199,9 @@ parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
-parser.add_argument('--name',default='Res18baseMM', type=str, help='output model name')
+parser.add_argument('--name',default='Res50MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=100, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -253,11 +253,11 @@ def main():
 
 
     # Set model
-    model = Res18_basic(NUM_CLASSES)
+    model = Res50(NUM_CLASSES)
     model.eval()
 
     # set EMA model
-    ema_model = Res18_basic(NUM_CLASSES)
+    ema_model = Res50(NUM_CLASSES)
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()

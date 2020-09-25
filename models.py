@@ -170,9 +170,9 @@ class Res50(nn.Module):
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.fc = nn.Sequential()        
         self.model = model_ft
-        self.fc_embed = nn.Linear(2048, fea_dim)
+        self.fc_embed = nn.Linear(512, fea_dim)
         self.fc_embed.apply(weights_init_classifier)
-        self.classifier = ClassBlock(2048, class_num)
+        self.classifier = ClassBlock(512, class_num)
         self.classifier.apply(weights_init_classifier)        
         
     def forward(self, x):
