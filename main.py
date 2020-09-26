@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
+import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
@@ -328,7 +329,8 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+        optimizer = t_optim.Yogi(model.parameters(), lr=0.01)
+        # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
