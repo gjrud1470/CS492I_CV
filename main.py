@@ -149,7 +149,7 @@ def split_ids(path, ratio):
 def _infer(model, root_path, test_loader=None):
     if test_loader is None:
         test_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(root_path, 'test',
+            SimpleImageLoader(root_path, 'test', opts.aug_size,
                                transform=transforms.Compose([
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
@@ -210,6 +210,7 @@ parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learni
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--aug_size', type=int, default=5, help='augmenting number for unlabeled data')
 
 # arguments for logging and backup
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
@@ -291,7 +292,7 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids,
+            SimpleImageLoader(DATASET_PATH, 'train', opts.aug_size, train_ids,
                               transform=transforms.Compose([
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
@@ -305,7 +306,7 @@ def main():
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
+            SimpleImageLoader(DATASET_PATH, 'unlabel', opts.aug_size, unl_ids,
                               transform=transforms.Compose([
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
@@ -319,7 +320,7 @@ def main():
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'val', val_ids,
+            SimpleImageLoader(DATASET_PATH, 'val', opts.aug_size, val_ids,
                                transform=transforms.Compose([
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
@@ -398,12 +399,14 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 data = labeled_train_iter.next()
                 inputs_x, targets_x = data
             try:
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data
+                inputs_u = unlabeled_train_iter.next()
+                #data = unlabeled_train_iter.next()
+                #inputs_u1, inputs_u2 = data
             except:
                 unlabeled_train_iter = iter(unlabel_loader)       
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data         
+                inputs_u = unlabeled_train_iter.next()
+                #data = unlabeled_train_iter.next()
+                #inputs_u1, inputs_u2 = data         
         
             batch_size = inputs_x.size(0)
             # Transform label to one-hot
@@ -413,26 +416,42 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             
             if use_gpu :
                 inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
-                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
+                for i in range(opts.aug_size):
+                    inputs_u[i] = inputs_u[i].cuda()
+                #inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
             
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                embed_u1, pred_u1 = model(inputs_u1)
-                embed_u2, pred_u2 = model(inputs_u2)
-                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
+                embed_u, pred_u = [None] * opts.aug_size, [None] * opts.aug_size
+                for i in range(opts.aug_size):
+                    embed_u[i], pred_u[i] = model(inputs_u[i])
+                #embed_u1, pred_u1 = model(inputs_u1)
+                #embed_u2, pred_u2 = model(inputs_u2)
+                #pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
+                pred_u_sum = torch.softmax(pred_u[0], dim = 1)
+                for i in range(1, opts.aug_size):
+                    pred_u_sum = pred_u_sum + torch.softmax(pred_u[i], dim = 1)
+                pred_u_all = pred_u_sum / opts.aug_size
                 pt = pred_u_all**(1/opts.T)
                 targets_u = pt / pt.sum(dim=1, keepdim=True)
                 targets_u = targets_u.detach()
                 
             # mixup
-            all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
-            all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
+            #all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
+            #all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)
+            all_inputs = [inputs_x]
+            all_targets = [targets_x]
+            for i in range(opts.aug_size):
+                all_inputs.append(inputs_u[i])
+                all_targets.append(targets_u)
+            all_inputs = torch.cat(all_inputs, dim = 0)
+            all_targets = torch.cat(all_targets, dim = 0)
             
             lamda = np.random.beta(opts.alpha, opts.alpha)        
             lamda= max(lamda, 1-lamda)    
             newidx = torch.randperm(all_inputs.size(0))
             input_a, input_b = all_inputs, all_inputs[newidx]
-            target_a, target_b = all_targets, all_targets[newidx]        
+            target_a, target_b = all_targets, all_targets[newidx]
             
             mixed_input = lamda * input_a + (1 - lamda) * input_b
             mixed_target = lamda * target_a + (1 - lamda) * target_b
@@ -440,6 +459,10 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
             mixed_input = list(torch.split(mixed_input, batch_size))
             mixed_input = interleave(mixed_input, batch_size)
+
+            # Try freeing GPU memory
+            #del inputs_u, targets_x
+            #torch.cuda.empty_cache()
 
             optimizer.zero_grad()
             

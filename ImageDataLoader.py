@@ -16,9 +16,19 @@ class TransformTwice:
         out1 = self.transform(inp)
         out2 = self.transform(inp)
         return out1, out2    
-    
+
+class TransformMultiple:
+    def __init__(self, transform, aug_size):
+        self.transform = transform
+        self.aug_size = aug_size
+    def __call__(self, inp):
+        out = [inp] * self.aug_size
+        for i in range(self.aug_size):
+            out[i] = self.transform(inp)
+        return out
+
 class SimpleImageLoader(torch.utils.data.Dataset):
-    def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader):
+    def __init__(self, rootdir, split, aug_size, ids=None, transform=None, loader=default_image_loader):
         if split == 'test':
             self.impath = os.path.join(rootdir, 'test_data')
             meta_file = os.path.join(self.impath, 'test_meta.txt')
@@ -45,7 +55,9 @@ class SimpleImageLoader(torch.utils.data.Dataset):
                             imclasses.append(int(label))
 
         self.transform = transform
+        self.aug_size = aug_size
         self.TransformTwice = TransformTwice(transform)
+        self.TransformMultiple = TransformMultiple(transform, self.aug_size)
         self.loader = loader
         self.split = split
         self.imnames = imnames
@@ -64,9 +76,11 @@ class SimpleImageLoader(torch.utils.data.Dataset):
                 img = self.transform(img)
             label = self.imclasses[index]
             return img, label
-        else:        
-            img1, img2 = self.TransformTwice(img)
-            return img1, img2
+        else:
+            mult_img = self.TransformMultiple(img)
+            return mult_img
+            #img1, img2 = self.TransformTwice(img)
+            #return img1, img2
         
     def __len__(self):
         return len(self.imnames)
