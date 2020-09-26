@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+from PIL import Image
 import os
 import sys
 import argparse
@@ -297,7 +298,7 @@ def main():
                                   transforms.RandomHorizontalFlip(),
                                   transforms.RandomVerticalFlip(),
                                   transforms.ColorJitter(brightness = 0.3, contrast = 0.2, saturation=0.2, hue=0.1),
-                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=PIL.Image.BILINEAR),
+                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
                                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
@@ -311,7 +312,7 @@ def main():
                                   transforms.RandomHorizontalFlip(),
                                   transforms.RandomVerticalFlip(),
                                   transforms.ColorJitter(brightness = 0.3, contrast = 0.2, saturation=0.2, hue=0.1),
-                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=PIL.Image.BILINEAR),
+                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
                                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
