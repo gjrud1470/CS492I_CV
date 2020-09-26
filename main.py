@@ -150,7 +150,6 @@ def _infer(model, root_path, test_loader=None):
         test_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(root_path, 'test',
                                transform=transforms.Compose([
-                                   transforms.Grayscale(num_output_channels=3),
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
@@ -199,9 +198,9 @@ parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
-parser.add_argument('--name',default='Res50MM', type=str, help='output model name')
+parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=100, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -253,11 +252,11 @@ def main():
 
 
     # Set model
-    model = Res50(NUM_CLASSES)
+    model = Res18_basic(NUM_CLASSES)
     model.eval()
 
     # set EMA model
-    ema_model = Res50(NUM_CLASSES)
+    ema_model = Res18_basic(NUM_CLASSES)
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
@@ -293,7 +292,6 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids,
                               transform=transforms.Compose([
-                                  transforms.Grayscale(num_output_channels=3),
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
                                   transforms.RandomHorizontalFlip(),
@@ -306,7 +304,6 @@ def main():
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
                               transform=transforms.Compose([
-                                  transforms.Grayscale(num_output_channels=3),
                                   transforms.Resize(opts.imResize),
                                   transforms.RandomResizedCrop(opts.imsize),
                                   transforms.RandomHorizontalFlip(),
@@ -319,7 +316,6 @@ def main():
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Grayscale(num_output_channels=3),
                                    transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
@@ -331,7 +327,8 @@ def main():
             opts.steps_per_epoch = len(train_loader)
 
         # Set optimizer
-        optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
