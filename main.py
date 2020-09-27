@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
+import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
@@ -334,7 +335,8 @@ def main():
             opts.steps_per_epoch = len(train_loader)
 
         # Set optimizer
-        optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        #optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        optimizer = t_optim.Yogi(model.parameters())
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
