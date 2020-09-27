@@ -202,6 +202,7 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 parser.add_argument('--name',default='Res18baseMM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--batchratio', default=0.1, type=float, help='ratio between label and unlabeled batch')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -210,7 +211,7 @@ parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learni
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
-parser.add_argument('--aug_size', type=int, default=5, help='augmenting number for unlabeled data')
+parser.add_argument('--aug_size', type=int, default=2, help='augmenting number for unlabeled data')
 
 # arguments for logging and backup
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
@@ -302,7 +303,7 @@ def main():
                                   transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                                batch_size=int(opts.batchsize*opts.batchratio), shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
