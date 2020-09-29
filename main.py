@@ -456,13 +456,14 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             mixed_input = interleave(mixed_input, batch_size)
 
             optimizer.zero_grad()
-            
-            fea, logits_temp = model(mixed_input[0])
-            logits = [logits_temp]
-            for newinput in mixed_input[1:]:
-                with torch.cuda.amp.autocast():
+           
+            with torch.cuda.amp.autocast():
+                fea, logits_temp = model(mixed_input[0])
+                logits = [logits_temp]
+                for newinput in mixed_input[1:]:
+             #   with torch.cuda.amp.autocast():
                     fea, logits_temp = model(newinput)
-                logits.append(logits_temp)        
+                    logits.append(logits_temp)        
                 
             # put interleaved samples back
             logits = interleave(logits, batch_size)
@@ -487,6 +488,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             # ema_optimizer.step()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
+            ema_optimizer.step()
             scaler.update()
             scheduler.step(float(loss))
 
