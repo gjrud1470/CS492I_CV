@@ -137,7 +137,7 @@ class Res18(nn.Module):
     def __init__(self, class_num):
         super(Res18, self).__init__()
         fea_dim = 256
-        model_ft = models.resnet34(pretrained=False)
+        model_ft = models.resnet18(pretrained=False)
         model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         model_ft.fc = nn.Sequential()
         self.model = model_ft
