@@ -348,6 +348,8 @@ def main():
 
         # Train and Validation 
         best_acc = -1
+        best_weight_acc = [-1] * 5
+        is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
@@ -358,12 +360,22 @@ def main():
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
+            for w in range(5):
+                is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
+                best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
+
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_best')
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_best'))
+            for w in range(5):
+                if (is_weighted_best[w]):
+                    if IS_ON_NSML:
+                        nsml.save(opts.name + '_{}weighted_best'.format(0.2*(w+1)))
+                    else:
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}weighted_best'.format(0.2*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
