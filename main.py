@@ -329,7 +329,7 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-2)
+        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3)
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
@@ -344,6 +344,8 @@ def main():
         
         # Train and Validation 
         best_acc = -1
+        best_weight_acc = [-1] * 5
+        is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
@@ -354,6 +356,9 @@ def main():
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
+            for w in range(5):
+                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
+                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
     #        scheduler.step(float(train_criterion))
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
@@ -361,6 +366,12 @@ def main():
                     nsml.save(opts.name + '_best')
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_best'))
+            for w in range(5):
+                if (is_weighted_best[w]):
+                    if IS_ON_NSML:
+                        nsml.save(opts.name + '_{}w_best'.format(2*(w+1)))
+                    else:
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(2*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
@@ -370,6 +381,7 @@ def main():
                 
 def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
+    scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
     losses_x = AverageMeter()
@@ -448,7 +460,8 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             fea, logits_temp = model(mixed_input[0])
             logits = [logits_temp]
             for newinput in mixed_input[1:]:
-                fea, logits_temp = model(newinput)
+                with torch.cuda.amp.autocast():
+                    fea, logits_temp = model(newinput)
                 logits.append(logits_temp)        
                 
             # put interleaved samples back
@@ -469,9 +482,12 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
             # compute gradient and do SGD step
-            loss.backward()
-            optimizer.step()
-            ema_optimizer.step()
+            # loss.backward()
+            # optimizer.step()
+            # ema_optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step(float(loss))
 
             with torch.no_grad():
