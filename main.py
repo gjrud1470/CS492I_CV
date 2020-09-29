@@ -344,7 +344,7 @@ def main():
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-        scheduler = torch.toptim.lr_scheduler.ReduceLROnPlateau(optimzer, factor=0.9, eps=1e-3)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimzer, factor=0.9, eps=1e-3)
 
         # Train and Validation 
         best_acc = -1
