@@ -203,7 +203,7 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 parser.add_argument('--name',default='Res18baseMM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
-parser.add_argument('--batchratio', default=0.1, type=float, help='ratio between label and unlabeled batch')
+parser.add_argument('--batchratio', default=1, type=float, help='ratio between label and unlabeled batch')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -344,7 +344,7 @@ def main():
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimzer, factor=0.9, eps=1e-3)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps=1e-3)
 
         # Train and Validation 
         best_acc = -1
@@ -373,9 +373,9 @@ def main():
             for w in range(5):
                 if (is_weighted_best[w]):
                     if IS_ON_NSML:
-                        nsml.save(opts.name + '_{}weighted_best'.format(0.2*(w+1)))
+                        nsml.save(opts.name + '_{:.2f}w_best'.format(0.2*(w+1)))
                     else:
-                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}weighted_best'.format(0.2*(w+1))))
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{:.2f}w_best'.format(0.2*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
