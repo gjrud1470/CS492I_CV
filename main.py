@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
+import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
@@ -198,7 +199,7 @@ parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
-parser.add_argument('--name',default='Res18baseMM', type=str, help='output model name')
+parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
@@ -327,20 +328,27 @@ def main():
             opts.steps_per_epoch = len(train_loader)
 
         # Set optimizer
-        optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
+        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3)
+        # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion = SemiLoss()
+        # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
-
+        # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        
         # Train and Validation 
         best_acc = -1
+        best_weight_acc = [-1] * 5
+        is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
-            loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu)
+            loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
             print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
             # scheduler.step()
 
@@ -348,12 +356,22 @@ def main():
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
+            for w in range(5):
+                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
+                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
+    #        scheduler.step(float(train_criterion))
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_best')
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_best'))
+            for w in range(5):
+                if (is_weighted_best[w]):
+                    if IS_ON_NSML:
+                        nsml.save(opts.name + '_{}w_best'.format(2*(w+1)))
+                    else:
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(2*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
@@ -361,8 +379,9 @@ def main():
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
                 
-def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu):
+def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
+    scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
     losses_x = AverageMeter()
@@ -441,7 +460,8 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             fea, logits_temp = model(mixed_input[0])
             logits = [logits_temp]
             for newinput in mixed_input[1:]:
-                fea, logits_temp = model(newinput)
+                with torch.cuda.amp.autocast():
+                    fea, logits_temp = model(newinput)
                 logits.append(logits_temp)        
                 
             # put interleaved samples back
@@ -462,10 +482,14 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
             # compute gradient and do SGD step
-            loss.backward()
-            optimizer.step()
-            ema_optimizer.step()
-            
+            # loss.backward()
+            # optimizer.step()
+            # ema_optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step(float(loss))
+
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
                 embed_x, pred_x1 = model(inputs_x)
