@@ -301,7 +301,7 @@ def main():
                                   transforms.RandomHorizontalFlip(),
                                   transforms.RandomVerticalFlip(),
                                   transforms.ColorJitter(brightness = 0.3, contrast = 0.2, saturation=0.2, hue=0.1),
-                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
+                                  #transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
                                 batch_size=int(opts.batchsize*opts.batchratio), shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
@@ -315,7 +315,7 @@ def main():
                                   transforms.RandomHorizontalFlip(),
                                   transforms.RandomVerticalFlip(),
                                   transforms.ColorJitter(brightness = 0.3, contrast = 0.2, saturation=0.2, hue=0.1),
-                                  transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
+                                  #transforms.RandomAffine(30, shear = (-30, 30, -30, 30), resample=Image.BILINEAR),
                                   transforms.ToTensor(),
                                   transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
                                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
@@ -336,7 +336,7 @@ def main():
 
         # Set optimizer
         #optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters())
+        optimizer = t_optim.Yogi(model.parameters(), eps=1e-5)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
@@ -372,6 +372,7 @@ def main():
                 
 def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu):
     global global_step
+    scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
     losses_x = AverageMeter()
@@ -463,16 +464,13 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             mixed_input = list(torch.split(mixed_input, batch_size))
             mixed_input = interleave(mixed_input, batch_size)
 
-            # Try freeing GPU memory
-            #del inputs_u, targets_x
-            #torch.cuda.empty_cache()
-
             optimizer.zero_grad()
             
             fea, logits_temp = model(mixed_input[0])
             logits = [logits_temp]
             for newinput in mixed_input[1:]:
-                fea, logits_temp = model(newinput)
+                with torch.cuda.amp.autocast():
+                    fea, logits_temp = model(newinput)
                 logits.append(logits_temp)        
                 
             # put interleaved samples back
@@ -493,8 +491,11 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
             # compute gradient and do SGD step
-            loss.backward()
-            optimizer.step()
+            #loss.backward()
+            #optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             ema_optimizer.step()
             
             with torch.no_grad():
