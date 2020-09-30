@@ -212,6 +212,7 @@ parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learni
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--optimizer_eps', type=float, default=1e-3, help='')
 
 # arguments for logging and backup
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
@@ -341,7 +342,7 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3))
+        optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
