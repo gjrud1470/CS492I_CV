@@ -19,6 +19,8 @@ from torch.optim import lr_scheduler
 import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
+import pytorch_lightning as pl
+from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -151,7 +153,7 @@ def _infer(model, root_path, test_loader=None):
         test_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(root_path, 'test',
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
+                                   transforms.Resize(opts.imResize, interpolation=3),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -287,37 +289,47 @@ def main():
         model.train()
         ema_model.train()
 
+        train_transforms = transforms.Compose([
+            transforms.RandomResizedCrop(opts.imsize),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomApply([transforms.ColorJitter(0.8, 0.8, 0.8, 0.2)], p=0.5),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
+
         # Set dataloader
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  transforms.RandomResizedCrop(opts.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
+                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+       #                       transform=transforms.Compose([
+        #                          transforms.Resize(opts.imResize),
+         #                         transforms.RandomResizedCrop(opts.imsize),
+          #                        transforms.RandomHorizontalFlip(),
+           #                       transforms.RandomVerticalFlip(),
+            #                      transforms.ToTensor(),
+             #                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
+              #                  batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  transforms.RandomResizedCrop(opts.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
+                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+          #                    transform=transforms.Compose([
+           #                       transforms.Resize(opts.imResize),
+            #                      transforms.RandomResizedCrop(opts.imsize),
+             #                     transforms.RandomHorizontalFlip(),
+              #                    transforms.RandomVerticalFlip(),
+               #                   transforms.ToTensor(),
+                #                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
+                 #               batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
+                                   transforms.Resize(opts.imResize, interpolation=3),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
@@ -329,7 +341,7 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3)
+        optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 

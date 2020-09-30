@@ -7,6 +7,7 @@ setup(
     install_requires=[
         'tqdm',
         'numpy',
-        'torch_optimizer'
+        'torch_optimizer',
+        'pytorch-lightning-bolts'
     ]
 )
