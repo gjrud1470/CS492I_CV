@@ -7,6 +7,7 @@ import os
 import sys
 import argparse
 
+import cv2
 import numpy as np
 import shutil
 import random
@@ -104,6 +105,15 @@ class WeightEMA(object):
                 # customized weight decay
                 param.mul_(1 - self.wd)
 
+class GaussianBlur(object):
+    def __init__(self, size):
+        self.size = size
+    
+    def __call__(self, sample):
+        sample = np.array(sample)
+        sample = cv2.GaussianBlur(sample, (self.size, self.size), 0)
+        return sample
+
 def interleave_offsets(batch, nu):
     groups = [batch // (nu + 1)] * (nu + 1)
     for x in range(batch - sum(groups)):
@@ -157,7 +167,7 @@ def _infer(model, root_path, test_loader=None):
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                               ])), batch_size=opts.batchsize, shuffle=False, num_workers=4, pin_memory=True)
+                               ])), batch_size=(opts.batchsize_labeled+opts.batchsize_unlabeled), shuffle=False, num_workers=4, pin_memory=True)
         print('loaded {} test images'.format(len(test_loader.dataset)))
 
     outputs = []
@@ -203,7 +213,8 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 # basic settings
 parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--batchsize_labeled', default=20, type=int, help='labeled data batchsize')
+parser.add_argument('--batchsize_unlabeled', default=200, type=int, help='unlabeled data batchsize')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -293,8 +304,9 @@ def main():
         train_transforms = transforms.Compose([
             transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(0.8, 0.8, 0.8, 0.2)], p=0.8),
             transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply(GaussianBlur(int(opts.imsize*0.1)+1), p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
 
@@ -303,38 +315,22 @@ def main():
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
-                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-       #                       transform=transforms.Compose([
-        #                          transforms.Resize(opts.imResize),
-         #                         transforms.RandomResizedCrop(opts.imsize),
-          #                        transforms.RandomHorizontalFlip(),
-           #                       transforms.RandomVerticalFlip(),
-            #                      transforms.ToTensor(),
-             #                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-              #                  batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                batch_size=opts.batchsize_labeled, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
-                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-          #                    transform=transforms.Compose([
-           #                       transforms.Resize(opts.imResize),
-            #                      transforms.RandomResizedCrop(opts.imsize),
-             #                     transforms.RandomHorizontalFlip(),
-              #                    transforms.RandomVerticalFlip(),
-               #                   transforms.ToTensor(),
-                #                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                 #               batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                batch_size=opts.batchsize_unlabeled, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize, interpolation=3),
+                                   transforms.Resize(opts.imResize-10, interpolation=3),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                               batch_size=opts.batchsize, shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
+                               batch_size=(opts.batchsize_labeled+opts.batchsize_unlabeled), shuffle=False, num_workers=0, pin_memory=True, drop_last=False)
         print('validation_loader done')
 
         if opts.steps_per_epoch < 0:
