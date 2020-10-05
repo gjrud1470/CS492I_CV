@@ -291,9 +291,9 @@ def main():
         ema_model.train()
 
         train_transforms = transforms.Compose([
-            transforms.RandomResizedCrop(opts.imsize),
+            transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(0.8, 0.8, 0.8, 0.2)], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
             transforms.RandomGrayscale(p=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
@@ -342,7 +342,8 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
+        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps)
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
