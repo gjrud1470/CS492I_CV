@@ -87,7 +87,7 @@ class ClassBlock(nn.Module):
         if relu: 
             add_block += [nn.ReLU()]
         if dropout: 
-            add_block += [nn.Dropout(p=0.5)] 
+            add_block += [nn.Dropout(p=0.3)] 
         add_block = nn.Sequential(*add_block)
         add_block.apply(weights_init_kaiming)
         classifier = []
