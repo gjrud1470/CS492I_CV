@@ -204,6 +204,7 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
 # basic hyper-parameters
@@ -316,7 +317,7 @@ def main():
 
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
-                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+                batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
           #                    transform=transforms.Compose([
            #                       transforms.Resize(opts.imResize),
             #                      transforms.RandomResizedCrop(opts.imsize),
@@ -371,8 +372,8 @@ def main():
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
             for w in range(5):
-                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
-                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
+                is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
+                best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
     #        scheduler.step(float(train_criterion))
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
@@ -475,7 +476,6 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 fea, logits_temp = model(mixed_input[0])
                 logits = [logits_temp]
                 for newinput in mixed_input[1:]:
-             #   with torch.cuda.amp.autocast():
                     fea, logits_temp = model(newinput)
                     logits.append(logits_temp)        
                 
