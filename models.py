@@ -100,7 +100,54 @@ class ClassBlock(nn.Module):
         x = self.add_block(x)
         x = self.classifier(x)
         return x    
-    
+
+######################################################################       
+# SimCLR-style Model using MixMatch ClassBlock
+###################################################################### 
+class MixSim_Model(nn.Module):
+    def __init__(self, class_num):
+        super(MixSim_Model, self).__init__()
+
+        fea_dim = 256
+        model_ft = models.resnet50(pretrained=False)
+        #model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        #model_ft.fc = nn.Sequential()
+        self.model = model_ft
+        self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),
+            nn.ReLU(inplace=True))
+        self.proj_head_disc = nn.Sequential(nn.Linear(512, 512), nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True), nn.Linear(512, fea_dim))
+
+        self.fc_embed = nn.Linear(512, fea_dim)
+        self.fc_embed.apply(weights_init_classifier)
+        self.classifier = ClassBlock(512, class_num)
+        self.classifier.apply(weights_init_classifier)
+
+    def forward(self, x):
+        # Resnet layers
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.avgpool(x)
+
+        # Change shape to have rows of size x.size(0)
+        fea =  x.view(x.size(0), -1)
+
+        # Layers used in unlabeled pre-training
+        proj = self.proj_head_used(fea)
+        pre = self.proj_head_disc(proj)
+
+        # Classification model using half of projection head
+        embed_fea = self.fc_embed(proj)
+        pred = self.classifier(proj)
+        return pre, embed_fea, pred
+
+
 ######################################################################       
 # Define the ResNet18-based Model
 ######################################################################     
