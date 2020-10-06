@@ -136,7 +136,8 @@ class MixSim_Model(nn.Module):
         x = self.model.avgpool(x)
 
         # Change shape to have rows of size x.size(0)
-        fea =  x.view(x.size(0), -1)
+        #fea =  x.view(x.size(0), -1)
+        fea = torch.flatten(x, 1)
 
         # Layers used in unlabeled pre-training
         proj = self.proj_head_used(fea)

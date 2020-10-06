@@ -28,7 +28,7 @@ from torchvision import datasets, models, transforms
 import torch.nn.functional as F
 
 from ImageDataLoader import SimpleImageLoader
-from models import Res18, Res50, Dense121, Res18_basic
+from models import Res18, Res50, Dense121, Res18_basic, MixSim_Model
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -197,13 +197,13 @@ def bind_nsml(model):
 ######################################################################
 parser = argparse.ArgumentParser(description='Sample Product200K Training')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: 200)')
+parser.add_argument('--epochs', type=int, default=700, metavar='N', help='number of epochs to train (default: 200)')
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
 parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
 parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 
@@ -223,6 +223,11 @@ parser.add_argument('--save_epoch', type=int, default=50, help='saving epoch int
 parser.add_argument('--alpha', default=0.75, type=float)
 parser.add_argument('--lambda-u', default=75, type=float)
 parser.add_argument('--T', default=0.5, type=float)
+
+# hyper-parameters for SimCLR
+parser.add_argument('--pre_train_epoch', default=400, type=int, help='pre-training epoch')
+parser.add_argument('--fine_tune_epoch', default=30, type=int, help='fine-tuning epoch')
+parser.add_argument('--temperature', default=1.0, type=float, help='temperature value for SimCLR')
 
 ### DO NOT MODIFY THIS BLOCK ###
 # arguments for nsml 
@@ -257,7 +262,7 @@ def main():
 
 
     # Set model
-    model = Res18_basic(NUM_CLASSES)
+    model = MixSim_Model(NUM_CLASSES)
     model.eval()
 
     # set EMA model
@@ -305,27 +310,11 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-       #                       transform=transforms.Compose([
-        #                          transforms.Resize(opts.imResize),
-         #                         transforms.RandomResizedCrop(opts.imsize),
-          #                        transforms.RandomHorizontalFlip(),
-           #                       transforms.RandomVerticalFlip(),
-            #                      transforms.ToTensor(),
-             #                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-              #                  batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-          #                    transform=transforms.Compose([
-           #                       transforms.Resize(opts.imResize),
-            #                      transforms.RandomResizedCrop(opts.imsize),
-             #                     transforms.RandomHorizontalFlip(),
-              #                    transforms.RandomVerticalFlip(),
-               #                   transforms.ToTensor(),
-                #                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                 #               batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
@@ -349,7 +338,9 @@ def main():
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
-        train_criterion = SemiLoss()
+        train_criterion_pre = SemiLoss()
+        train_criterion_fine = SemiLoss()
+        train_criterion_distill = SemiLoss()
         # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
@@ -363,7 +354,15 @@ def main():
         is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
-            loss, loss_x, loss_u, avg_top1, avg_top5 = train(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+            if (epoch < opts.pre_train_epoch):
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_pre(opts, train_loader, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                # Don't print or save while doing pre-training
+                continue
+            else if (epoch < opts.pre_train_epcoh + opts.fine_tune_epoch):
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_fine(opts, train_loader, unlabel_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+            else:
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+
             print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
             # scheduler.step()
 
@@ -393,8 +392,208 @@ def main():
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
+def train_pre(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+    global global_step
+    scaler = torch.cuda.amp.GradScaler()
+    model.train()
+    
+    # nCnt =0 
+    out = False
+    local_step = 0
+    while not out:
+        unlabeled_train_iter = iter(unlabel_loader)
+        for batch_idx in range(len(unlabel_loader)):
+            try:
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data
+            except:
+                unlabeled_train_iter = iter(unlabel_loader)       
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data         
+        
+            batch_size = inputs_u1.size(0)
+            # Transform label to one-hot
+            classno = NUM_CLASSES
+            
+            if use_gpu :
+                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()
+
+            optimizer.zero_grad()
+           
+            with torch.cuda.amp.autocast():
+                pre_u1, _, _ = model(inputs_u1[0])
+                pre_u2, _, _ = model(inputs_u2[0])
+                z1 = [pre_u1]
+                z2 = [pre_u2]
+                for i in range(1, len(inputs_u1)):
+                    pre_u1, _, _ = model(inputs_u1[i])
+                    pre_u2, _, _ = model(inputs_u2[i])
+                    z1.append(pre_u1)
+                    z2.append(pre_u2)       
+            
+            loss = criterion(z1, z2, opts.temperature)
+            
+            # compute gradient and do SGD step
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            ema_optimizer.step()
+            scaler.update()
+            scheduler.step(float(loss))
+
+            with torch.no_grad():
+                # compute guessed labels of unlabel samples
+                embed_x, pred_x1 = model(inputs_x)
+
+            if IS_ON_NSML and global_step % opts.log_interval == 0:
+                nsml.report(step=global_step)
+
+            local_step += 1
+            global_step += 1
+
+            if local_step >= opts.steps_per_epoch:
+                out = True
+                break
+        
+    return
+
+def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+    global global_step
+    scaler = torch.cuda.amp.GradScaler()
+
+    losses = AverageMeter()
+    losses_x = AverageMeter()
+    losses_un = AverageMeter()
+    
+    losses_curr = AverageMeter()
+    losses_x_curr = AverageMeter()
+    losses_un_curr = AverageMeter()
+
+    weight_scale = AverageMeter()
+    acc_top1 = AverageMeter()
+    acc_top5 = AverageMeter()
+    
+    model.train()
+    
+    # nCnt =0 
+    out = False
+    local_step = 0
+    while not out:
+        labeled_train_iter = iter(train_loader)
+        unlabeled_train_iter = iter(unlabel_loader)
+        for batch_idx in range(len(train_loader)):
+            try:
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            except:
+                labeled_train_iter = iter(train_loader)       
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            try:
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data
+            except:
+                unlabeled_train_iter = iter(unlabel_loader)       
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data         
+        
+            batch_size = inputs_x.size(0)
+            # Transform label to one-hot
+            classno = NUM_CLASSES 
+            targets_org = targets_x
+            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
+            
+            if use_gpu :
+                inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
+                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
+            
+            with torch.no_grad():
+                # compute guessed labels of unlabel samples
+                embed_u1, pred_u1 = model(inputs_u1)
+                embed_u2, pred_u2 = model(inputs_u2)
+                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
+                pt = pred_u_all**(1/opts.T)
+                targets_u = pt / pt.sum(dim=1, keepdim=True)
+                targets_u = targets_u.detach()
                 
-def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+            # mixup
+            all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
+            all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
+            
+            lamda = np.random.beta(opts.alpha, opts.alpha)        
+            lamda= max(lamda, 1-lamda)    
+            newidx = torch.randperm(all_inputs.size(0))
+            input_a, input_b = all_inputs, all_inputs[newidx]
+            target_a, target_b = all_targets, all_targets[newidx]        
+            
+            mixed_input = lamda * input_a + (1 - lamda) * input_b
+            mixed_target = lamda * target_a + (1 - lamda) * target_b
+            
+            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
+            mixed_input = list(torch.split(mixed_input, batch_size))
+            mixed_input = interleave(mixed_input, batch_size)
+
+            optimizer.zero_grad()
+           
+            with torch.cuda.amp.autocast():
+                fea, logits_temp = model(mixed_input[0])
+                logits = [logits_temp]
+                for newinput in mixed_input[1:]:
+                    fea, logits_temp = model(newinput)
+                    logits.append(logits_temp)        
+                
+            # put interleaved samples back
+            logits = interleave(logits, batch_size)
+            logits_x = logits[0]
+            logits_u = torch.cat(logits[1:], dim=0)            
+            
+            loss_x, loss_un, weigts_mixing = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
+            loss = loss_x + weigts_mixing * loss_un
+
+            losses.update(loss.item(), inputs_x.size(0))
+            losses_x.update(loss_x.item(), inputs_x.size(0))
+            losses_un.update(loss_un.item(), inputs_x.size(0))
+            weight_scale.update(weigts_mixing, inputs_x.size(0))
+
+            losses_curr.update(loss.item(), inputs_x.size(0))
+            losses_x_curr.update(loss_x.item(), inputs_x.size(0))
+            losses_un_curr.update(loss_un.item(), inputs_x.size(0))
+                    
+            # compute gradient and do SGD step
+            # loss.backward()
+            # optimizer.step()
+            # ema_optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            ema_optimizer.step()
+            scaler.update()
+            scheduler.step(float(loss))
+
+            with torch.no_grad():
+                # compute guessed labels of unlabel samples
+                embed_x, pred_x1 = model(inputs_x)
+
+            if IS_ON_NSML and global_step % opts.log_interval == 0:
+                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                losses_curr.reset()
+                losses_x_curr.reset()
+                losses_un_curr.reset()
+
+            acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+            acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+            acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
+            acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))   
+
+            local_step += 1
+            global_step += 1
+
+            if local_step >= opts.steps_per_epoch:
+                out = True
+                break
+        
+    return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+
+                
+def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
