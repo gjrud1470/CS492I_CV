@@ -83,6 +83,32 @@ class SemiLoss(object):
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
+class NCELoss(object):
+    def __init__(self):
+        self.sim_fn = nn.CosineSimilarity(dim=-1)
+        self.criterion = nn.CrossEntropyLoss(reduction="sum")
+        self.size = opts.batchsize * opts.unlabelratio
+        self.device = 'cuda' if opts.cuda > 0 else 'cpu'
+
+    def __call__(self, zi, zj, temperature):
+        # [2*size, D]
+        zij = torch.cat([zi, zj], dim=0)
+
+        # [2*size, 2*size]
+        sim_matrix = self.sim_fn(zij.unsqueeze(1), zij.unsqueeze(0)) / temperature
+
+        simij = torch.diag(similarity_matrix, self.size)
+        simji = torch.diag(similarity_matrix, -self.size)
+
+        pos = torch.cat([simij, simji]).view(2 * self.size, 1)
+        neg = sim_matrix - torch.diag(torch.diag(sim_matrix, 0)).view(2 * self.size, -1)
+
+        labels = torch.zeros(2 * self.size).to(self.device).long()
+        logits = torch.cat((pos, neg), dim=1)
+        Lu = self.criterion(logits, labels) / (2 * self.size)
+
+        return Lu
+
 class WeightEMA(object):
     def __init__(self, model, ema_model, lr, alpha=0.999):
         self.model = model
@@ -221,7 +247,7 @@ parser.add_argument('--save_epoch', type=int, default=50, help='saving epoch int
 
 # hyper-parameters for mix-match
 parser.add_argument('--alpha', default=0.75, type=float)
-parser.add_argument('--lambda-u', default=75, type=float)
+parser.add_argument('--lambda_u', default=75, type=float)
 parser.add_argument('--T', default=0.5, type=float)
 
 # hyper-parameters for SimCLR
@@ -338,7 +364,7 @@ def main():
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
-        train_criterion_pre = SemiLoss()
+        train_criterion_pre = NCELoss()
         train_criterion_fine = SemiLoss()
         train_criterion_distill = SemiLoss()
         # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
@@ -355,15 +381,17 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (epoch < opts.pre_train_epoch):
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_pre(opts, train_loader, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
-                # Don't print or save while doing pre-training
+                train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                # Don't print or save anything else while doing pre-training
+                print('epoch {:03d}/{:03d} finished: pre-training')
                 continue
             else if (epoch < opts.pre_train_epcoh + opts.fine_tune_epoch):
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_fine(opts, train_loader, unlabel_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                loss, loss_x, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, loss_x, avg_top1, avg_top5))
             else:
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
-
-            print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: distillation'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
+            
             # scheduler.step()
 
             # print('start validation')
@@ -392,7 +420,7 @@ def main():
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
-def train_pre(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
     model.train()
@@ -431,6 +459,10 @@ def train_pre(opts, train_loader, unlabel_loader, model, criterion, optimizer, e
                     z1.append(pre_u1)
                     z2.append(pre_u2)       
             
+            z1 = [torch.cat(z, dim=0) for z in z1]
+            z2 = [torch.cat(z, dim=0) for z in z2]
+            if use_gpu :
+                z1, z2 = z1.cuda(), z2.cuda()
             loss = criterion(z1, z2, opts.temperature)
             
             # compute gradient and do SGD step
@@ -439,10 +471,6 @@ def train_pre(opts, train_loader, unlabel_loader, model, criterion, optimizer, e
             ema_optimizer.step()
             scaler.update()
             scheduler.step(float(loss))
-
-            with torch.no_grad():
-                # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step)
@@ -456,17 +484,15 @@ def train_pre(opts, train_loader, unlabel_loader, model, criterion, optimizer, e
         
     return
 
-def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
     losses_x = AverageMeter()
-    losses_un = AverageMeter()
     
     losses_curr = AverageMeter()
     losses_x_curr = AverageMeter()
-    losses_un_curr = AverageMeter()
 
     weight_scale = AverageMeter()
     acc_top1 = AverageMeter()
@@ -479,7 +505,6 @@ def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, 
     local_step = 0
     while not out:
         labeled_train_iter = iter(train_loader)
-        unlabeled_train_iter = iter(unlabel_loader)
         for batch_idx in range(len(train_loader)):
             try:
                 data = labeled_train_iter.next()
@@ -488,14 +513,7 @@ def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, 
                 labeled_train_iter = iter(train_loader)       
                 data = labeled_train_iter.next()
                 inputs_x, targets_x = data
-            try:
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data
-            except:
-                unlabeled_train_iter = iter(unlabel_loader)       
-                data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data         
-        
+
             batch_size = inputs_x.size(0)
             # Transform label to one-hot
             classno = NUM_CLASSES 
@@ -504,60 +522,27 @@ def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, 
             
             if use_gpu :
                 inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
-                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
-            
-            with torch.no_grad():
-                # compute guessed labels of unlabel samples
-                embed_u1, pred_u1 = model(inputs_u1)
-                embed_u2, pred_u2 = model(inputs_u2)
-                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
-                pt = pred_u_all**(1/opts.T)
-                targets_u = pt / pt.sum(dim=1, keepdim=True)
-                targets_u = targets_u.detach()
                 
-            # mixup
-            all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
-            all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
-            
-            lamda = np.random.beta(opts.alpha, opts.alpha)        
-            lamda= max(lamda, 1-lamda)    
-            newidx = torch.randperm(all_inputs.size(0))
-            input_a, input_b = all_inputs, all_inputs[newidx]
-            target_a, target_b = all_targets, all_targets[newidx]        
-            
-            mixed_input = lamda * input_a + (1 - lamda) * input_b
-            mixed_target = lamda * target_a + (1 - lamda) * target_b
-            
-            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
-            mixed_input = list(torch.split(mixed_input, batch_size))
-            mixed_input = interleave(mixed_input, batch_size)
-
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                fea, logits_temp = model(mixed_input[0])
-                logits = [logits_temp]
-                for newinput in mixed_input[1:]:
-                    fea, logits_temp = model(newinput)
-                    logits.append(logits_temp)        
-                
-            # put interleaved samples back
-            logits = interleave(logits, batch_size)
-            logits_x = logits[0]
-            logits_u = torch.cat(logits[1:], dim=0)            
+                _, _, logit = model(inputs_x[0])
+                logits = [logit]
+                for i in range(1, len(inputs_x)):
+                    _, _, logit = model(inputs_x[i])
+                    logits.append(logit)     
             
-            loss_x, loss_un, weigts_mixing = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
-            loss = loss_x + weigts_mixing * loss_un
+            logits = [torch.cat(t, dim=0) for t in logits]
+            if use_gpu :
+                logits = logtis.cuda()
+            loss = criterion(logits, targets_x, opts.temperature)
 
             losses.update(loss.item(), inputs_x.size(0))
             losses_x.update(loss_x.item(), inputs_x.size(0))
-            losses_un.update(loss_un.item(), inputs_x.size(0))
-            weight_scale.update(weigts_mixing, inputs_x.size(0))
 
             losses_curr.update(loss.item(), inputs_x.size(0))
             losses_x_curr.update(loss_x.item(), inputs_x.size(0))
-            losses_un_curr.update(loss_un.item(), inputs_x.size(0))
-                    
+
             # compute gradient and do SGD step
             # loss.backward()
             # optimizer.step()
@@ -570,13 +555,12 @@ def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, 
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = model(inputs_x)
+                _, _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
-                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg)
                 losses_curr.reset()
                 losses_x_curr.reset()
-                losses_un_curr.reset()
 
             acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
             acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
@@ -590,7 +574,7 @@ def train_fine(opts, train_loader, unlabel_loader, model, criterion, optimizer, 
                 out = True
                 break
         
-    return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+    return losses.avg, losses_x.avg, acc_top1.avg, acc_top5.avg
 
                 
 def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
