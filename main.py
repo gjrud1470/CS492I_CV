@@ -97,8 +97,8 @@ class NCELoss(object):
         # [2*size, 2*size]
         sim_matrix = self.sim_fn(zij.unsqueeze(1), zij.unsqueeze(0)) / temperature
 
-        simij = torch.diag(similarity_matrix, self.size)
-        simji = torch.diag(similarity_matrix, -self.size)
+        simij = torch.diag(sim_matrix, self.size)
+        simji = torch.diag(sim_matrix, -self.size)
 
         pos = torch.cat([simij, simji]).view(2 * self.size, 1)
         neg = sim_matrix - torch.diag(torch.diag(sim_matrix, 0)).view(2 * self.size, -1)
@@ -223,7 +223,7 @@ def bind_nsml(model):
 ######################################################################
 parser = argparse.ArgumentParser(description='Sample Product200K Training')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
-parser.add_argument('--epochs', type=int, default=700, metavar='N', help='number of epochs to train (default: 200)')
+parser.add_argument('--epochs', type=int, default=800, metavar='N', help='number of epochs to train (default: 200)')
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
@@ -292,7 +292,7 @@ def main():
     model.eval()
 
     # set EMA model
-    ema_model = Res18_basic(NUM_CLASSES)
+    ema_model = MixSim_Model(NUM_CLASSES)
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
@@ -365,7 +365,7 @@ def main():
 
         # INSTANTIATE LOSS CLASS
         train_criterion_pre = NCELoss()
-        train_criterion_fine = SemiLoss()
+        train_criterion_fine = NCELoss()
         train_criterion_distill = SemiLoss()
         # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
@@ -380,14 +380,14 @@ def main():
         is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
-            if (epoch < opts.pre_train_epoch):
+            if (epoch <= opts.pre_train_epoch):
                 train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
                 # Don't print or save anything else while doing pre-training
-                print('epoch {:03d}/{:03d} finished: pre-training')
+                print('epoch {:03d}/{:03d} finished: pre-training'.format(epoch, opts.epochs))
                 continue
-            else if (epoch < opts.pre_train_epcoh + opts.fine_tune_epoch):
-                loss, loss_x, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
-                print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, loss_x, avg_top1, avg_top5))
+            elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
+                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
             else:
                 loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: distillation'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
@@ -449,21 +449,21 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                pre_u1, _, _ = model(inputs_u1[0])
-                pre_u2, _, _ = model(inputs_u2[0])
-                z1 = [pre_u1]
-                z2 = [pre_u2]
-                for i in range(1, len(inputs_u1)):
-                    pre_u1, _, _ = model(inputs_u1[i])
-                    pre_u2, _, _ = model(inputs_u2[i])
-                    z1.append(pre_u1)
-                    z2.append(pre_u2)       
-            
-            z1 = [torch.cat(z, dim=0) for z in z1]
-            z2 = [torch.cat(z, dim=0) for z in z2]
-            if use_gpu :
-                z1, z2 = z1.cuda(), z2.cuda()
-            loss = criterion(z1, z2, opts.temperature)
+                pre_u1, _, _ = model(inputs_u1)
+                pre_u2, _, _ = model(inputs_u2)
+#                z1 = [pre_u1]
+#                z2 = [pre_u2]
+#                for i in range(1, len(inputs_u1)):
+#                    pre_u1, _, _ = model(inputs_u1[i])
+#                    pre_u2, _, _ = model(inputs_u2[i])
+#                    z1.append(pre_u1)
+#                    z2.append(pre_u2)       
+#            
+#            z1 = [torch.cat(z, dim=0) for z in z1]
+#            z2 = [torch.cat(z, dim=0) for z in z2]
+#            if use_gpu :
+#                z1, z2 = z1.cuda(), z2.cuda()
+            loss = criterion(pre_u1, pre_u2, opts.temperature)
             
             # compute gradient and do SGD step
             scaler.scale(loss).backward()
@@ -526,22 +526,20 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                _, _, logit = model(inputs_x[0])
-                logits = [logit]
-                for i in range(1, len(inputs_x)):
-                    _, _, logit = model(inputs_x[i])
-                    logits.append(logit)     
-            
-            logits = [torch.cat(t, dim=0) for t in logits]
-            if use_gpu :
-                logits = logtis.cuda()
+                _, _, logits = model(inputs_x)
+#                logits = [logit]
+#                for i in range(1, len(inputs_x)):
+#                    _, _, logit = model(inputs_x[i])
+#                    logits.append(logit)     
+#            
+#            logits = [torch.cat(t, dim=0) for t in logits]
+#            if use_gpu :
+#                logits = logtis.cuda()
             loss = criterion(logits, targets_x, opts.temperature)
 
             losses.update(loss.item(), inputs_x.size(0))
-            losses_x.update(loss_x.item(), inputs_x.size(0))
 
             losses_curr.update(loss.item(), inputs_x.size(0))
-            losses_x_curr.update(loss_x.item(), inputs_x.size(0))
 
             # compute gradient and do SGD step
             # loss.backward()
@@ -558,9 +556,8 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
                 _, _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
-                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg)
+                nsml.report(step=global_step, loss=losses_curr.avg)
                 losses_curr.reset()
-                losses_x_curr.reset()
 
             acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
             acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
@@ -574,7 +571,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
                 out = True
                 break
         
-    return losses.avg, losses_x.avg, acc_top1.avg, acc_top5.avg
+    return losses.avg, acc_top1.avg, acc_top5.avg
 
                 
 def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
@@ -629,8 +626,8 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                embed_u1, pred_u1 = model(inputs_u1)
-                embed_u2, pred_u2 = model(inputs_u2)
+                _, _, pred_u1 = model(inputs_u1)
+                _, _, pred_u2 = model(inputs_u2)
                 pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
                 pt = pred_u_all**(1/opts.T)
                 targets_u = pt / pt.sum(dim=1, keepdim=True)
@@ -656,10 +653,10 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                fea, logits_temp = model(mixed_input[0])
+                _, _, logits_temp = model(mixed_input[0])
                 logits = [logits_temp]
                 for newinput in mixed_input[1:]:
-                    fea, logits_temp = model(newinput)
+                    _, _, logits_temp = model(newinput)
                     logits.append(logits_temp)        
                 
             # put interleaved samples back
@@ -691,7 +688,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                embed_x, pred_x1 = model(inputs_x)
+                _, _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -725,7 +722,7 @@ def validation(opts, validation_loader, model, epoch, use_gpu):
             if use_gpu :
                 inputs = inputs.cuda()
             nCnt +=1
-            embed_fea, preds = model(inputs)
+            _, _, preds = model(inputs)
 
             acc_top1 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=1)*100
             acc_top5 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=5)*100
