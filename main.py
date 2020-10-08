@@ -227,7 +227,7 @@ parser.add_argument('--epochs', type=int, default=800, metavar='N', help='number
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
-parser.add_argument('--name',default='Res18MM', type=str, help='output model name')
+parser.add_argument('--name',default='MixSim', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
 parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
@@ -288,11 +288,11 @@ def main():
 
 
     # Set model
-    model = MixSim_Model(NUM_CLASSES)
+    model = MixSim_Model(NUM_CLASSES, opts.gpu_ids)
     model.eval()
 
     # set EMA model
-    ema_model = MixSim_Model(NUM_CLASSES)
+    ema_model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
@@ -301,9 +301,10 @@ def main():
     n_parameters = sum([p.data.nelement() for p in model.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
-    if use_gpu:
-        model.cuda()
-        ema_model.cuda()
+    # If we use MixSim_Model, we don't have to cast it to gpu.
+    #if use_gpu:
+    #    model.cuda()
+    #    ema_model.cuda()
 
     model_for_test = ema_model # change this to model if ema_model is not used.
 
@@ -445,7 +446,8 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             classno = NUM_CLASSES
             
             if use_gpu :
-                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
 
             optimizer.zero_grad()
            
@@ -511,7 +513,8 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 
             optimizer.zero_grad()
            
@@ -524,7 +527,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
 #            
 #            logits = [torch.cat(t, dim=0) for t in logits]
 #            if use_gpu :
-#                logits = logtis.cuda()
+#                logits = logits.cuda()
             loss = criterion(logits, targets_x, opts.temperature)
 
             losses.update(loss.item(), inputs_x.size(0))
@@ -611,8 +614,9 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
-                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
+                inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
             
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
@@ -710,7 +714,8 @@ def validation(opts, validation_loader, model, epoch, use_gpu):
         for batch_idx, data in enumerate(validation_loader):
             inputs, labels = data
             if use_gpu :
-                inputs = inputs.cuda()
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                inputs = inputs.to(dev0)
             nCnt +=1
             _, _, preds = model(inputs)
 
