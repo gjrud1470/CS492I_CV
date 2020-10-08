@@ -372,7 +372,8 @@ def main():
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.epochs)
         
         # Train and Validation 
         best_acc = -1
@@ -381,9 +382,9 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (epoch <= opts.pre_train_epoch):
-                train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
                 # Don't print or save anything else while doing pre-training
-                print('epoch {:03d}/{:03d} finished: pre-training'.format(epoch, opts.epochs))
+                print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
                 loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
@@ -451,18 +452,7 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             with torch.cuda.amp.autocast():
                 pre_u1, _, _ = model(inputs_u1)
                 pre_u2, _, _ = model(inputs_u2)
-#                z1 = [pre_u1]
-#                z2 = [pre_u2]
-#                for i in range(1, len(inputs_u1)):
-#                    pre_u1, _, _ = model(inputs_u1[i])
-#                    pre_u2, _, _ = model(inputs_u2[i])
-#                    z1.append(pre_u1)
-#                    z2.append(pre_u2)       
-#            
-#            z1 = [torch.cat(z, dim=0) for z in z1]
-#            z2 = [torch.cat(z, dim=0) for z in z2]
-#            if use_gpu :
-#                z1, z2 = z1.cuda(), z2.cuda()
+
             loss = criterion(pre_u1, pre_u2, opts.temperature)
             
             # compute gradient and do SGD step
@@ -482,7 +472,7 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
                 out = True
                 break
         
-    return
+    return loss
 
 def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step

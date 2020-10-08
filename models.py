@@ -10,6 +10,8 @@ from collections import OrderedDict
 import re
 import torch.nn.functional as F
 
+from efficientnet_pytorch import EfficientNet
+
 __all__ = ['resnet18', 'resnet50', 'densenet121']
 
 model_urls = {
@@ -105,15 +107,16 @@ class ClassBlock(nn.Module):
 # SimCLR-style Model using MixMatch ClassBlock
 ###################################################################### 
 class MixSim_Model(nn.Module):
-    def __init__(self, class_num):
+    def __init__(self, class_num, dropout=0.2):
         super(MixSim_Model, self).__init__()
 
         fea_dim = 256
-        model_ft = models.resnet50(pretrained=False)
+        #model_ft = models.resnet50(pretrained=False)
         #model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         #model_ft.fc = nn.Sequential()
+        model_ft = EfficientNet.from_name('efficientnet-b0', dropout_rate=dropout) # num_classes = 2048
         self.model = model_ft
-        self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),
+        self.proj_head_used = nn.Sequential(nn.Linear(1280, 512),
             nn.ReLU(inplace=True))
         self.proj_head_disc = nn.Sequential(nn.Linear(512, 512), nn.BatchNorm1d(512),
             nn.ReLU(inplace=True), nn.Linear(512, fea_dim))
@@ -124,16 +127,18 @@ class MixSim_Model(nn.Module):
         self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
-        # Resnet layers
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-        x = self.model.avgpool(x)
+        #x = self.model.conv1(x)
+        #x = self.model.bn1(x)
+        #x = self.model.relu(x)
+        #x = self.model.maxpool(x)
+        #x = self.model.layer1(x)
+        #x = self.model.layer2(x)
+        #x = self.model.layer3(x)
+        #x = self.model.layer4(x)
+        #x = self.model.avgpool(x)
+        #x = self.model(x)
+        x = self.model.extract_features(x)
+        x = self.model._avg_pooling(x)
 
         # Change shape to have rows of size x.size(0)
         #fea =  x.view(x.size(0), -1)
