@@ -25,7 +25,8 @@ from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 import torchvision
 from torchvision import datasets, models, transforms
 
-import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ImageDataLoader import SimpleImageLoader
 from models import Res18, Res50, Dense121, Res18_basic, MixSim_Model
@@ -283,6 +284,13 @@ def main():
         print("Currently using GPU {}".format(opts.gpu_ids))
         cudnn.benchmark = True
         torch.cuda.manual_seed_all(seed)
+
+        #Setup for DistributedDataParallel
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+
+        # initialize the process group
+        dist.init_process_group("gloo")
     else:
         print("Currently using CPU (GPU is highly recommended)")
 
@@ -318,8 +326,10 @@ def main():
     if opts.mode == 'train':
         # set multi-gpu
         if len(opts.gpu_ids.split(',')) > 1:
-            model = nn.DataParallel(model)
-            ema_model = nn.DataParallel(ema_model)
+            #model = nn.DataParallel(model)
+            #ema_model = nn.DataParallel(ema_model)
+            model = DDP(model)
+            model = DDP(model)
         model.train()
         ema_model.train()
 
@@ -422,6 +432,11 @@ def main():
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
+
+    # cleanup (DistributedDataParallel)
+    if use_gpu:
+        dist.destroy_process_group()
+
 def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
@@ -446,7 +461,7 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             classno = NUM_CLASSES
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
 
             optimizer.zero_grad()
@@ -513,7 +528,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 
             optimizer.zero_grad()
@@ -614,7 +629,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
             
@@ -714,7 +729,7 @@ def validation(opts, validation_loader, model, epoch, use_gpu):
         for batch_idx, data in enumerate(validation_loader):
             inputs, labels = data
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[-1])
+                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 inputs = inputs.to(dev0)
             nCnt +=1
             _, _, preds = model(inputs)

@@ -107,17 +107,18 @@ class ClassBlock(nn.Module):
 # SimCLR-style Model using MixMatch ClassBlock
 ###################################################################### 
 class MixSim_Model(nn.Module):
-    def __init__(self, class_num, devices, dropout=0.2):
+    def __init__(self, class_num, devices, dropout=0.2, split_size=10):
         super(MixSim_Model, self).__init__()
 
         fea_dim = 256
         self.dev0 = 'cuda:{}'.format(devices[0])
         self.dev1 = 'cuda:{}'.format(devices[-1])
+        self.split_size = split_size
 
         #model_ft = models.resnet50(pretrained=False)
         #model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
         #model_ft.fc = nn.Sequential()
-        model_ft = EfficientNet.from_name('efficientnet-b0', dropout_rate=dropout) # num_classes = 2048
+        model_ft = EfficientNet.from_name('efficientnet-b3', dropout_rate=dropout) # num_classes = 2048
         self.model = model_ft.to(self.dev1)
 
         self.proj_head_used = nn.Sequential(nn.Linear(1280, 512),nn.ReLU(inplace=True)).to(self.dev0)
@@ -127,6 +128,54 @@ class MixSim_Model(nn.Module):
         self.fc_embed = nn.Linear(512, fea_dim).to(self.dev0)
         self.fc_embed.apply(weights_init_classifier)
         self.classifier = ClassBlock(512, class_num).to(self.dev0)
+        self.classifier.apply(weights_init_classifier)
+
+    def forward(self, x):
+        splits = iter(x.split(self.split_size, dim=0))
+        s_next = next(splits)
+        s_prev = self.model.extract_features(s_next)
+        s_prev = self.model._avg_pooling(s_prev)
+        fea = torch.flatten(s_prev, 1).to(self.dev0)
+        pre_l, emb_l, pred_l = [], [], []
+
+        for s_next in splits:
+            # Run on dev0
+            proj = self.proj_head_used(fea)
+            pre_l.append(self.proj_head_disc(proj))
+            #emb_l.append(self.fc_embed(proj))
+            pred_l.append(self.classifier(proj))
+
+            # Run on dev1
+            s_prev = self.model.extract_features(s_next)
+            s_prev = self.model._avg_pooling(s_prev)
+            fea = torch.flatten(s_prev, 1).to(self.dev0)
+
+        #On dev0
+        proj = self.proj_head_used(fea)
+        pre_l.append(self.proj_head_disc(proj))
+        #emb_l.append(self.fc_embed(proj))
+        pred_l.append(self.classifier(proj))
+
+        return torch.cat(pre_l), torch.cat(emb_l), torch.cat(pred_l)
+
+class MixSim_Model_Single(nn.Module):
+    def __init__(self, class_num, dropout=0.2):
+        super(MixSim_Model, self).__init__()
+
+        fea_dim = 256
+
+        #model_ft = models.resnet50(pretrained=False)
+        #model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        #model_ft.fc = nn.Sequential()
+        model_ft = EfficientNet.from_name('efficientnet-b3', dropout_rate=dropout) # num_classes = 2048
+        self.model = model_ft
+        self.proj_head_used = nn.Sequential(nn.Linear(1280, 512),nn.ReLU(inplace=True))
+        self.proj_head_disc = nn.Sequential(nn.Linear(512, 512), nn.BatchNorm1d(512), 
+            nn.ReLU(inplace=True), nn.Linear(512, fea_dim))
+
+        self.fc_embed = nn.Linear(512, fea_dim)
+        self.fc_embed.apply(weights_init_classifier)
+        self.classifier = ClassBlock(512, class_num)
         self.classifier.apply(weights_init_classifier)
 
     def forward(self, x):
@@ -145,7 +194,7 @@ class MixSim_Model(nn.Module):
 
         # Change shape to have rows of size x.size(0)
         #fea =  x.view(x.size(0), -1)
-        fea = torch.flatten(x, 1).to(self.dev0)
+        fea = torch.flatten(x, 1)
 
         # Layers used in unlabeled pre-training
         proj = self.proj_head_used(fea)
