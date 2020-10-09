@@ -81,8 +81,10 @@ class SemiLoss(object):
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
-''' the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
-    Noise Contrastive Estimation(NCE) Loss with cosine similarity '''
+######################################################################
+# the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
+# Noise Contrastive Estimation(NCE) Loss with cosine similarity
+######################################################################
 class NCELoss(object):
     def __init__(self):
         self.sim_fn = nn.CosineSimilarity(dim=-1)
@@ -332,7 +334,10 @@ def main():
         model.train()
         ema_model.train()
 
-        train_transforms = transforms.Compose([
+        ######################################################################      
+        # Data Augmentation for train data and unlabeled data
+        ######################################################################      
+        data_transforms = transforms.Compose([
             transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
@@ -344,12 +349,12 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=data_transforms), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=data_transforms),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
@@ -382,7 +387,9 @@ def main():
         train_criterion_fine = NCELoss()
         train_criterion_distill = SemiLoss()
 
+        ######################################################################
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
+        ######################################################################
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
@@ -553,9 +560,6 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             losses_curr.update(loss.item(), inputs_x.size(0))
 
             # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
