@@ -228,9 +228,9 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 parser.add_argument('--name',default='MixSim', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
-parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
+parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio related to labeled')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
-parser.add_argument('--ensemble_size', type=int, default=1, help='number of models for ensembling')
+parser.add_argument('--ensemble_size', type=int, default=1, help='number of models to perform ensembling')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
@@ -286,8 +286,11 @@ def main():
     else:
         print("Currently using CPU (GPU is highly recommended)")
 
-
-    # Set this value to True if we use "MixSim_Model". Doesn't apply for MixSim_Model_Single
+    ######################################################################       
+    # Set this value to True if we use "MixSim_Model".
+    # "MixSim_Model" sends its parameters to gpu devices on its own for model parallel.
+    # Doesn't apply for "MixSim_Model_Single", which uses single gpu. So set is_mixsim = False.
+    ###################################################################### 
     is_mixsim = True
 
     # Set model
@@ -304,6 +307,7 @@ def main():
     n_parameters = sum([p.data.nelement() for p in model.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
+    # "MixSim_Model" sends its parameters to gpu devices on its own.
     if use_gpu and (not is_mixsim):
         model.cuda()
         ema_model.cuda()
@@ -384,19 +388,23 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (epoch <= opts.pre_train_epoch):
-                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
-                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
                 continue
             else:
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: distillation'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
             
             # scheduler.step()
 
+            ######################################################################
+            # For each weights=0, 0.5, 1.0, 1.5, 2.0, save the best model with
+            # best accuracy of (acc_top1 + weights * acc_top5).
+            ######################################################################
             # print('start validation')
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
@@ -422,8 +430,10 @@ def main():
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
-
-def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Pre-training method described in SimCLRv2 paper
+######################################################################
+def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
     model.train()
@@ -443,6 +453,7 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
                 inputs_u1, inputs_u2 = data         
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
@@ -476,7 +487,10 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
         
     return loss
 
-def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Fine-tuning method described in SimCLRv2 paper
+######################################################################
+def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -513,6 +527,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
@@ -562,8 +577,11 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
         
     return losses.avg, acc_top1.avg, acc_top5.avg
 
-                
-def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Instead of Knowledge-Distillation from SimCLRv2 paper,
+# we use MixMatch method for distillation.
+######################################################################
+def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -610,6 +628,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
