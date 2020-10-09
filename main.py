@@ -19,9 +19,9 @@ from torch.optim import lr_scheduler
 import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
-import pytorch_lightning as pl
-from pl_bolts.optimizers.lars_scheduling import LARSWrapper
+
 import pytorch_warmup as warmup
+from torchlars import LARS
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -74,6 +74,34 @@ def linear_rampup(current, rampup_length):
     else:
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
+
+# Exponential rampup
+def exponential_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        result = float(np.exp(-5.0 * phase * phase))
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
+# Quadratic rampup
+def quad_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        result = float(current*current)
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
         
 class SemiLoss(object):
     def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
@@ -82,6 +110,10 @@ class SemiLoss(object):
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
+######################################################################
+# the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
+# Noise Contrastive Estimation(NCE) Loss with cosine similarity
+######################################################################
 class NCELoss(object):
     def __init__(self):
         self.sim_fn = nn.CosineSimilarity(dim=-1)
@@ -235,10 +267,11 @@ parser.add_argument('--ensemble_size', type=int, default=1, help='number of mode
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
-parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+parser.add_argument('--ema_optimizer_lr', type=float, default=1e-4, metavar='LR', help='learning rate')
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--optimizer_lr', type=float, default=1e-2, help='learning rate for optimizer')
 parser.add_argument('--optimizer_eps', type=float, default=1e-3, help='')
 
 # arguments for logging and backup
@@ -330,7 +363,10 @@ def main():
         model.train()
         ema_model.train()
 
-        train_transforms = transforms.Compose([
+        ######################################################################      
+        # Data Augmentation for train data and unlabeled data
+        ######################################################################      
+        data_transforms = transforms.Compose([
             transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
@@ -342,12 +378,12 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=data_transforms), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=data_transforms),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
@@ -364,19 +400,26 @@ def main():
         if opts.steps_per_epoch < 0:
             opts.steps_per_epoch = len(train_loader)
 
-        # Set optimizer
+        ######################################################################
+        # Set Optimizer
+        # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
+        # LARS is layer-wise adaptive rate scaling.
+        ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps)
-        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-        ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
+        base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
+        optimizer = LARS(base_optimizer)
+        ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion_pre = NCELoss()
         train_criterion_fine = NCELoss()
         train_criterion_distill = SemiLoss()
 
+        ######################################################################
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
+        ######################################################################
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
@@ -550,9 +593,6 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             losses_curr.update(loss.item(), inputs_x.size(0))
 
             # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
