@@ -1,3 +1,9 @@
+############# Commands ##############
+# export PATH=$PATH:/mnt/c/Users/hyunj/Desktop/CS492_Project
+# nsml login
+# nsml run -d fashion_dataset
+#####################################
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -19,6 +25,8 @@ from torch.optim import lr_scheduler
 import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
+import pytorch_lightning as pl
+from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -27,6 +35,8 @@ import torch.nn.functional as F
 
 from ImageDataLoader import SimpleImageLoader
 from models import Res18, Res50, Dense121, Res18_basic
+from wideresnet import WideResNet
+from aug_fix import TransformFix
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -73,13 +83,42 @@ def linear_rampup(current, rampup_length):
     else:
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
-        
+
+#https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/mean_teacher/ramps.py 참고
+def exponential_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current, 0.0, rampup_length)
+        phase = 1.0 - current / rampup_length
+        result = float(np.exp(-5.0 * phase * phase))
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
+
+def quad_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        result = float(current*current)
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
+
 class SemiLoss(object):
     def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
         probs_u = torch.softmax(outputs_u, dim=1)
         Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
+        #return Lx, Lu, opts.lambda_u * quad_rampup(epoch, final_epoch)
 
 class WeightEMA(object):
     def __init__(self, model, ema_model, lr, alpha=0.999):
@@ -151,7 +190,7 @@ def _infer(model, root_path, test_loader=None):
         test_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(root_path, 'test',
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
+                                   transforms.Resize(opts.imResize, interpolation=3),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -210,6 +249,7 @@ parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learni
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--optimizer_eps', type=float, default=1e-3, help='')
 
 # arguments for logging and backup
 parser.add_argument('--log_interval', type=int, default=10, metavar='N', help='logging training status')
@@ -254,10 +294,12 @@ def main():
 
     # Set model
     model = Res18_basic(NUM_CLASSES)
+    #model = WideResNet(NUM_CLASSES)
     model.eval()
 
     # set EMA model
     ema_model = Res18_basic(NUM_CLASSES)
+    #ema_model = WideResNet(NUM_CLASSES)
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
@@ -280,6 +322,7 @@ def main():
     ################################
 
     if opts.mode == 'train':
+        print("train mode")
         # set multi-gpu
         if len(opts.gpu_ids.split(',')) > 1:
             model = nn.DataParallel(model)
@@ -287,37 +330,31 @@ def main():
         model.train()
         ema_model.train()
 
+        train_transforms = transforms.Compose([
+            transforms.RandomResizedCrop(opts.imsize, interpolation=3),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.6),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
+
         # Set dataloader
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  transforms.RandomResizedCrop(opts.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
+                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids,
-                              transform=transforms.Compose([
-                                  transforms.Resize(opts.imResize),
-                                  transforms.RandomResizedCrop(opts.imsize),
-                                  transforms.RandomHorizontalFlip(),
-                                  transforms.RandomVerticalFlip(),
-                                  transforms.ToTensor(),
-                                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
+                batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize),
+                                   transforms.Resize(opts.imResize, interpolation=3),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
@@ -329,7 +366,8 @@ def main():
 
         # Set optimizer
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= 1e-3)
+        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps)
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
 
@@ -380,6 +418,7 @@ def main():
 
                 
 def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+    print("train starts!")
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -403,6 +442,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
     while not out:
         labeled_train_iter = iter(train_loader)
         unlabeled_train_iter = iter(unlabel_loader)
+        print("train loader length : ", len(train_loader))
         for batch_idx in range(len(train_loader)):
             try:
                 data = labeled_train_iter.next()
@@ -423,25 +463,55 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             # Transform label to one-hot
             classno = NUM_CLASSES 
             targets_org = targets_x
-            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
+            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)   
             
             if use_gpu :
                 inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
                 inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
             
+            ####******************************************************************####
             with torch.no_grad():
+                print("batch idx : ", batch_idx)
                 # compute guessed labels of unlabel samples
-                embed_u1, pred_u1 = model(inputs_u1)
-                embed_u2, pred_u2 = model(inputs_u2)
-                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
-                pt = pred_u_all**(1/opts.T)
-                targets_u = pt / pt.sum(dim=1, keepdim=True)
-                targets_u = targets_u.detach()
+                _, pred_u1 = model(inputs_u1) # weak augmentation
+                _, pred_u2 = model(inputs_u2) # strong augmentation
+                # label guessing -> fixmatch는 pred_u1만 사용(no softmax, maximum이 일정 이상이면 사용, 아니면 continue)
+                if (torch.max(pred_u1) >= 0.5) : 
+                    print("max pred is over 0.5 / ", torch.max(pred_u1))
+                    pred_u1_max = torch.max(pred_u1)
+                    pred_u1_idx = torch.argmax(pred_u1)
+
+                    for pred in pred_u1 : 
+                        if pred.numpy()[0] < 0.5 : 
+                            pred_idx = (pred_u1 == pred).nonzero()
+                            inputs_u1 = torch.tensor(inputs_u1[:pred_idx], inputs_u1[pred_idx + 1:])
+
+                    for pred2 in pred_u2 : 
+                        if pred2.numpy()[0] < 0.5 : 
+                            pred2_idx = (pred_u2 == pred2).nonzero()
+                            inputs_u2 = torch.tensor(inputs_u2[:pred2_idx], inputs_u2[pred2_idx + 1:])
+
+                    targets_u = torch.zeros(batch_size, classno).scatter_(1, torch.tensor([pred_u1_idx], 1), 1)   
+                    
+
+
+                else :
+                    print("max pred is under 0.5 / ", torch.max(pred_u1))
+                    # inputs랑 targets에서 빼기
+                    inputs_u1 = torch.empty(inputs_u1.size())
+                    inputs_u2 = torch.empty(inputs_u2.size())
+                    targets_u = torch.empty(batch_size, classno)
+                    
+                    #continue
                 
-            # mixup
+                targets_u = targets_u.detach()
+               
+            # mixup -> fixmatch에서는 사용 X
+            print("all inputs and targets")
             all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
             all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
             
+            """
             lamda = np.random.beta(opts.alpha, opts.alpha)        
             lamda= max(lamda, 1-lamda)    
             newidx = torch.randperm(all_inputs.size(0))
@@ -450,11 +520,14 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             
             mixed_input = lamda * input_a + (1 - lamda) * input_b
             mixed_target = lamda * target_a + (1 - lamda) * target_b
-            
+            """
             # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
-            mixed_input = list(torch.split(mixed_input, batch_size))
-            mixed_input = interleave(mixed_input, batch_size)
+            #mixed_input = list(torch.split(mixed_input, batch_size))
+            #mixed_input = interleave(mixed_input, batch_size)
 
+            mixed_input = list(torch.split(all_inputs, batch_size))
+            mixed_target = all_targets
+            #mixed_input = interleave(mixed_input, batch_size)
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
@@ -466,6 +539,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                     logits.append(logits_temp)        
                 
             # put interleaved samples back
+            print("put interleaved samples back")
             logits = interleave(logits, batch_size)
             logits_x = logits[0]
             logits_u = torch.cat(logits[1:], dim=0)            
@@ -486,6 +560,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             # loss.backward()
             # optimizer.step()
             # ema_optimizer.step()
+            print("compute gradient and do SGD step")
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
@@ -502,6 +577,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 losses_x_curr.reset()
                 losses_un_curr.reset()
 
+            print("Accuracies")
             acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
             acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
             acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        

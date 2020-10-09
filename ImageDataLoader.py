@@ -5,17 +5,29 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import numpy as np
 import torch
+from aug_fix import TransformFix
+from randaugment import RandAugmentMC
 
 def default_image_loader(path):
     return Image.open(path).convert('RGB')
 
 class TransformTwice:
     def __init__(self, transform):
-        self.transform = transform
+        self.weak = transforms.Compose([
+            transforms.RandomResizedCrop(224, interpolation=3),
+            transforms.RandomHorizontalFlip()])
+        self.strong = transforms.Compose([
+            transforms.RandomResizedCrop(224, interpolation=3),
+            transforms.RandomHorizontalFlip(),
+            RandAugmentMC(n=2, m=10)])
+        self.normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
     def __call__(self, inp):
-        out1 = self.transform(inp)
-        out2 = self.transform(inp)
-        return out1, out2    
+        weak = self.weak(inp)
+        strong = self.strong(inp)
+        return self.normalize(weak), self.normalize(strong)
     
 class SimpleImageLoader(torch.utils.data.Dataset):
     def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader):
@@ -65,6 +77,7 @@ class SimpleImageLoader(torch.utils.data.Dataset):
             label = self.imclasses[index]
             return img, label
         else:        
+            # 하나 weak, 하나 strong -> train function 안에서 image loader로 받을 때 input u1에 weak, input u2에 strong
             img1, img2 = self.TransformTwice(img)
             return img1, img2
         
