@@ -1,5 +1,3 @@
-#import logging
-
 import numpy as np
 from PIL import Image
 from torchvision import datasets
@@ -7,9 +5,7 @@ from torchvision import transforms
 
 from randaugment import RandAugmentMC
 
-#logger = logging.getLogger(__name__)
-
-
+# Transform for FixMatch -> Weak & Strong augmentation
 class TransformFix(object):
     def __init__(self, opts):
         self.weak = transforms.Compose([

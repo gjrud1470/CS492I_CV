@@ -84,7 +84,7 @@ def linear_rampup(current, rampup_length):
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
 
-#https://github.com/CuriousAI/mean-teacher/blob/master/pytorch/mean_teacher/ramps.py 참고
+
 def exponential_rampup(current, rampup_length) : 
     if rampup_length == 0:
         return 1.0
@@ -418,7 +418,145 @@ def main():
 
                 
 def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
-    print("train starts!")
+    global global_step
+    scaler = torch.cuda.amp.GradScaler()
+
+    losses = AverageMeter()
+    losses_x = AverageMeter()
+    losses_un = AverageMeter()
+    
+    losses_curr = AverageMeter()
+    losses_x_curr = AverageMeter()
+    losses_un_curr = AverageMeter()
+
+    weight_scale = AverageMeter()
+    acc_top1 = AverageMeter()
+    acc_top5 = AverageMeter()
+    
+    model.train()
+    
+    # nCnt =0 
+    out = False
+    local_step = 0
+    while not out:
+        labeled_train_iter = iter(train_loader)
+        unlabeled_train_iter = iter(unlabel_loader)
+        for batch_idx in range(len(train_loader)):
+            try:
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            except:
+                labeled_train_iter = iter(train_loader)       
+                data = labeled_train_iter.next()
+                inputs_x, targets_x = data
+            try:
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data
+            except:
+                unlabeled_train_iter = iter(unlabel_loader)       
+                data = unlabeled_train_iter.next()
+                inputs_u1, inputs_u2 = data         
+        
+            batch_size = inputs_x.size(0)
+            # Transform label to one-hot
+            classno = NUM_CLASSES 
+            targets_org = targets_x
+            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
+            
+            if use_gpu :
+                inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
+                inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
+            
+            with torch.no_grad():
+                # compute guessed labels of unlabel samples
+                embed_u1, pred_u1 = model(inputs_u1)
+                embed_u2, pred_u2 = model(inputs_u2)
+                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
+                pt = pred_u_all**(1/opts.T)
+                targets_u = pt / pt.sum(dim=1, keepdim=True)
+                targets_u = targets_u.detach()
+                
+            # mixup
+            all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
+            all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
+            
+            lamda = np.random.beta(opts.alpha, opts.alpha)        
+            lamda= max(lamda, 1-lamda)    
+            newidx = torch.randperm(all_inputs.size(0))
+            input_a, input_b = all_inputs, all_inputs[newidx]
+            target_a, target_b = all_targets, all_targets[newidx]        
+            
+            mixed_input = lamda * input_a + (1 - lamda) * input_b
+            mixed_target = lamda * target_a + (1 - lamda) * target_b
+            
+            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
+            mixed_input = list(torch.split(mixed_input, batch_size))
+            mixed_input = interleave(mixed_input, batch_size)
+
+            optimizer.zero_grad()
+           
+            with torch.cuda.amp.autocast():
+                fea, logits_temp = model(mixed_input[0])
+                logits = [logits_temp]
+                for newinput in mixed_input[1:]:
+             #   with torch.cuda.amp.autocast():
+                    fea, logits_temp = model(newinput)
+                    logits.append(logits_temp)        
+                
+            # put interleaved samples back
+            logits = interleave(logits, batch_size)
+            logits_x = logits[0]
+            logits_u = torch.cat(logits[1:], dim=0)            
+            
+            loss_x, loss_un, weigts_mixing = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
+            loss = loss_x + weigts_mixing * loss_un
+
+            losses.update(loss.item(), inputs_x.size(0))
+            losses_x.update(loss_x.item(), inputs_x.size(0))
+            losses_un.update(loss_un.item(), inputs_x.size(0))
+            weight_scale.update(weigts_mixing, inputs_x.size(0))
+
+            losses_curr.update(loss.item(), inputs_x.size(0))
+            losses_x_curr.update(loss_x.item(), inputs_x.size(0))
+            losses_un_curr.update(loss_un.item(), inputs_x.size(0))
+                    
+            # compute gradient and do SGD step
+            # loss.backward()
+            # optimizer.step()
+            # ema_optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            ema_optimizer.step()
+            scaler.update()
+            scheduler.step(float(loss))
+
+            with torch.no_grad():
+                # compute guessed labels of unlabel samples
+                embed_x, pred_x1 = model(inputs_x)
+
+            if IS_ON_NSML and global_step % opts.log_interval == 0:
+                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                losses_curr.reset()
+                losses_x_curr.reset()
+                losses_un_curr.reset()
+
+            acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
+            acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
+            acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
+            acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))   
+
+            local_step += 1
+            global_step += 1
+
+            if local_step >= opts.steps_per_epoch:
+                out = True
+                break
+        
+    return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+
+
+# Train with FixMatch
+def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -469,7 +607,6 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 inputs_x, targets_x = inputs_x.cuda(), targets_x.cuda()
                 inputs_u1, inputs_u2 = inputs_u1.cuda(), inputs_u2.cuda()    
             
-            ####******************************************************************####
             with torch.no_grad():
                 print("batch idx : ", batch_idx)
                 # compute guessed labels of unlabel samples
@@ -506,34 +643,19 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 
                 targets_u = targets_u.detach()
                
-            # mixup -> fixmatch에서는 사용 X
             print("all inputs and targets")
             all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
             all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
-            
-            """
-            lamda = np.random.beta(opts.alpha, opts.alpha)        
-            lamda= max(lamda, 1-lamda)    
-            newidx = torch.randperm(all_inputs.size(0))
-            input_a, input_b = all_inputs, all_inputs[newidx]
-            target_a, target_b = all_targets, all_targets[newidx]        
-            
-            mixed_input = lamda * input_a + (1 - lamda) * input_b
-            mixed_target = lamda * target_a + (1 - lamda) * target_b
-            """
-            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
-            #mixed_input = list(torch.split(mixed_input, batch_size))
-            #mixed_input = interleave(mixed_input, batch_size)
 
-            mixed_input = list(torch.split(all_inputs, batch_size))
-            mixed_target = all_targets
-            #mixed_input = interleave(mixed_input, batch_size)
+            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
+            fixed_input = list(torch.split(all_inputs, batch_size))
+            fixed_target = all_targets
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                fea, logits_temp = model(mixed_input[0])
+                fea, logits_temp = model(fixed_input[0])
                 logits = [logits_temp]
-                for newinput in mixed_input[1:]:
+                for newinput in fixed_input[1:]:
              #   with torch.cuda.amp.autocast():
                     fea, logits_temp = model(newinput)
                     logits.append(logits_temp)        
@@ -544,7 +666,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             logits_x = logits[0]
             logits_u = torch.cat(logits[1:], dim=0)            
             
-            loss_x, loss_un, weigts_mixing = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
+            loss_x, loss_un, weigts_mixing = criterion(logits_x, fixed_target[:batch_size], logits_u, fixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
             loss = loss_x + weigts_mixing * loss_un
 
             losses.update(loss.item(), inputs_x.size(0))
@@ -557,9 +679,6 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
             # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
             print("compute gradient and do SGD step")
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -591,7 +710,6 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
                 break
         
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
-
 
 def validation(opts, validation_loader, model, epoch, use_gpu):
     model.eval()
