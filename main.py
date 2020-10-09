@@ -304,27 +304,11 @@ def main():
         train_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-       #                       transform=transforms.Compose([
-        #                          transforms.Resize(opts.imResize),
-         #                         transforms.RandomResizedCrop(opts.imsize),
-          #                        transforms.RandomHorizontalFlip(),
-           #                       transforms.RandomVerticalFlip(),
-            #                      transforms.ToTensor(),
-             #                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-              #                  batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
-          #                    transform=transforms.Compose([
-           #                       transforms.Resize(opts.imResize),
-            #                      transforms.RandomResizedCrop(opts.imsize),
-             #                     transforms.RandomHorizontalFlip(),
-              #                    transforms.RandomVerticalFlip(),
-               #                   transforms.ToTensor(),
-                #                  transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
-                 #               batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         validation_loader = torch.utils.data.DataLoader(
@@ -349,12 +333,13 @@ def main():
 
         # INSTANTIATE LOSS CLASS
         train_criterion = SemiLoss()
-        # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.epochs)
+        
         
         # Train and Validation 
         best_acc = -1
@@ -370,10 +355,9 @@ def main():
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
-            for w in range(5):
-                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
-                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
-    #        scheduler.step(float(train_criterion))
+            for w in range(4):
+                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.5 * acc_top5) > best_weight_acc[w]
+                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.5 * acc_top5), best_weight_acc[w])
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
@@ -385,7 +369,7 @@ def main():
                     if IS_ON_NSML:
                         nsml.save(opts.name + '_{}w_best'.format(2*(w+1)))
                     else:
-                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(2*(w+1))))
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(5*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
@@ -496,10 +480,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
             losses_x_curr.update(loss_x.item(), inputs_x.size(0))
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
-            # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
+            # compute gradient and do SGD step using amp
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
