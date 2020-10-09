@@ -81,6 +81,8 @@ class SemiLoss(object):
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
+''' the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
+    Noise Contrastive Estimation(NCE) Loss with cosine similarity '''
 class NCELoss(object):
     def __init__(self):
         self.sim_fn = nn.CosineSimilarity(dim=-1)
@@ -234,10 +236,11 @@ parser.add_argument('--ensemble_size', type=int, default=1, help='number of mode
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
-parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+parser.add_argument('--ema_optimizer_lr', type=float, default=1e-4, metavar='LR', help='learning rate')
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--optimizer_lr', type=float, default=1e-2, help='learning rate for optimizer')
 parser.add_argument('--optimizer_eps', type=float, default=1e-3, help='')
 
 # arguments for logging and backup
@@ -363,12 +366,16 @@ def main():
         if opts.steps_per_epoch < 0:
             opts.steps_per_epoch = len(train_loader)
 
-        # Set optimizer
+        ######################################################################
+        # Set Optimizer
+        # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
+        # LARSWrapper is layer-wise adaptive rate scaling.
+        ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps)
-        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-        ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
+        optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
+        ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion_pre = NCELoss()
