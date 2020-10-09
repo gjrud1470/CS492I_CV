@@ -25,9 +25,6 @@ from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 import torchvision
 from torchvision import datasets, models, transforms
 
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-
 from ImageDataLoader import SimpleImageLoader
 from models import Res18, Res50, Dense121, Res18_basic, MixSim_Model, MixSim_Model_Single
 
@@ -286,18 +283,15 @@ def main():
         cudnn.benchmark = True
         torch.cuda.manual_seed_all(seed)
 
-        #Setup for DistributedDataParallel
-        #os.environ['MASTER_ADDR'] = 'localhost'
-        #os.environ['MASTER_PORT'] = '12355'
-
-        # initialize the process group
-        #dist.init_process_group("gloo")
     else:
         print("Currently using CPU (GPU is highly recommended)")
 
 
+    # Set this value to True if we use "MixSim_Model". Doesn't apply for MixSim_Model_Single
+    is_mixsim = True
+
     # Set model
-    model = MixSim_Model(NUM_CLASSES, opts.gpu_ids)
+    model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
     model.eval()
 
     # set EMA model
@@ -310,10 +304,9 @@ def main():
     n_parameters = sum([p.data.nelement() for p in model.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
-    # If we use MixSim_Model, we don't have to cast it to gpu.
-    #if use_gpu:
-    #    model.cuda()
-    #    ema_model.cuda()
+    if use_gpu and (not is_mixsim):
+        model.cuda()
+        ema_model.cuda()
 
     model_for_test = ema_model # change this to model if ema_model is not used.
 
@@ -325,12 +318,10 @@ def main():
     ################################
 
     if opts.mode == 'train':
-        # set multi-gpu
-        #if len(opts.gpu_ids.split(',')) > 1:
-            #model = nn.DataParallel(model)
-            #ema_model = nn.DataParallel(ema_model)
-            #model = DDP(model)
-            #model = DDP(model)
+        # set multi-gpu (We won't use this with MixSim_Model)
+        if len(opts.gpu_ids.split(',')) > 1 and (not is_mixsim):
+            model = nn.DataParallel(model)
+            ema_model = nn.DataParallel(ema_model)
         model.train()
         ema_model.train()
 
@@ -414,7 +405,6 @@ def main():
             for w in range(5):
                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
-    #        scheduler.step(float(train_criterion))
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
@@ -434,10 +424,6 @@ def main():
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
 
-    # cleanup (DistributedDataParallel)
-    #if use_gpu:
-    #    dist.destroy_process_group()
-
 def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
@@ -456,14 +442,12 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
                 unlabeled_train_iter = iter(unlabel_loader)       
                 data = unlabeled_train_iter.next()
                 inputs_u1, inputs_u2 = data         
-        
-            batch_size = inputs_u1.size(0)
-            # Transform label to one-hot
-            classno = NUM_CLASSES
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
-                #dev0 = 'cuda'
+                if is_mixsim:
+                    dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                else:
+                    dev0 = 'cuda'
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
 
             optimizer.zero_grad()
@@ -530,22 +514,17 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
-                #dev0 = 'cuda'
+                if is_mixsim:
+                    dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                else:
+                    dev0 = 'cuda'
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
                 _, logits = model(inputs_x)
-#                logits = [logit]
-#                for i in range(1, len(inputs_x)):
-#                    _, _, logit = model(inputs_x[i])
-#                    logits.append(logit)     
-#            
-#            logits = [torch.cat(t, dim=0) for t in logits]
-#            if use_gpu :
-#                logits = logits.cuda()
+
             loss = criterion(logits, targets_x, opts.temperature)
 
             losses.update(loss.item(), inputs_x.size(0))
@@ -632,8 +611,10 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
-                dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
-                #dev0 = 'cuda'
+                if is_mixsim:
+                    dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                else:
+                    dev0 = 'cuda'
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
             
