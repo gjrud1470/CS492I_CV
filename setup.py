@@ -9,7 +9,7 @@ setup(
         'numpy',
         'torch_optimizer',
         'efficientnet_pytorch',
-        'pytorch_warmup'
-        'torchlars'
+        'pytorch_warmup',
+        'pytorch-lightning-bolts'
     ]
 )

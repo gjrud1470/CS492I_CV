@@ -21,7 +21,8 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
 import pytorch_warmup as warmup
-from torchlars import LARS
+from pl_bolts.optimizers.lars_scheduling import LARSWrapper
+#from torchlars import LARS
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -403,13 +404,14 @@ def main():
         ######################################################################
         # Set Optimizer
         # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
-        # LARS is layer-wise adaptive rate scaling.
+        # LARS is layer-wise adaptive rate scaling
+        # LARSWrapper helps stability with huge batch size.
         ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
-        optimizer = LARS(base_optimizer)
+        optimizer = LARSWrapper(base_optimizer, eta = 0.1)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
