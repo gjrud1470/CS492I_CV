@@ -134,9 +134,10 @@ class MixSim_Model(nn.Module):
             self.model.layer4,
             self.model.avgpool).to(self.dev1)
 
+        # 512 for ResNet18, 2048 for ResNet50. Internal perceptrons be reduced to 512.
         self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),nn.ReLU(inplace=True)).to(self.dev1)
-        self.proj_head_disc = nn.Sequential(nn.Linear(512, 512), nn.BatchNorm1d(512), 
-            nn.ReLU(inplace=True), nn.Linear(512, fea_dim)).to(self.dev1)
+        self.proj_head_disc = nn.Sequential(nn.Linear(512, 1024), nn.BatchNorm1d(1024), 
+            nn.ReLU(inplace=True), nn.Linear(1024, fea_dim)).to(self.dev1)
 
         #self.fc_embed = nn.Linear(512, fea_dim).to(self.dev1)
         #self.fc_embed.apply(weights_init_classifier)

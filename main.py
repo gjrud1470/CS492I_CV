@@ -233,6 +233,7 @@ parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1
 parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
 parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
+parser.add_argument('--ensemble_size', type=int, default=1, help='number of models for ensembling')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
