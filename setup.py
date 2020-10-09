@@ -8,7 +8,7 @@ setup(
         'tqdm',
         'numpy',
         'torch_optimizer',
-        'pytorch-lightning-bolts',
-        'efficientnet_pytorch'
+        'efficientnet_pytorch',
+        'torchlars'
     ]
 )
