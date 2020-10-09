@@ -378,7 +378,7 @@ def main():
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
-        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.epochs)
         
         # Train and Validation 
@@ -402,7 +402,7 @@ def main():
             # scheduler.step()
 
             ######################################################################
-            # For each weights=0, 0.5, 1.0, 1.5, 2.0, save the best model with
+            # For each weights=[0,0.5,1.0,1.5,2.0], save the best model with
             # best accuracy of (acc_top1 + weights * acc_top5).
             ######################################################################
             # print('start validation')
