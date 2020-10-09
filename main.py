@@ -21,6 +21,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
+import pytorch_warmup as warmup
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -379,7 +380,9 @@ def main():
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.steps_per_epoch * opts.epochs // 10)
+
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=opts.steps_per_epoch * 10)
         
         # Train and Validation 
         best_acc = -1
@@ -388,7 +391,7 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (epoch <= opts.pre_train_epoch):
-                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
+                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
@@ -433,7 +436,7 @@ def main():
 ######################################################################
 # Pre-training method described in SimCLRv2 paper
 ######################################################################
-def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
+def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
     model.train()
@@ -473,7 +476,8 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
+            warmup_scheduler.dampen()
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step)
@@ -553,7 +557,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
@@ -693,7 +697,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
