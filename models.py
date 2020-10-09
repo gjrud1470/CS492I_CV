@@ -10,6 +10,8 @@ from collections import OrderedDict
 import re
 import torch.nn.functional as F
 
+from efficientnet_pytorch import EfficientNet
+
 __all__ = ['resnet18', 'resnet50', 'densenet121']
 
 model_urls = {
@@ -100,7 +102,131 @@ class ClassBlock(nn.Module):
         x = self.add_block(x)
         x = self.classifier(x)
         return x    
-    
+
+######################################################################       
+# SimCLR-style Model using MixMatch ClassBlock
+###################################################################### 
+class MixSim_Model(nn.Module):
+    def __init__(self, class_num, devices, dropout=0.2, split_size=10):
+        super(MixSim_Model, self).__init__()
+
+        fea_dim = 256
+        self.dev0 = 'cuda:{}'.format(devices[0])
+        self.dev1 = 'cuda:{}'.format(devices[-1])
+        self.split_size = split_size
+
+        model_ft = models.resnet50(pretrained=False)
+        #model_ft = EfficientNet.from_name('efficientnet-b3', dropout_rate=dropout)
+
+        self.model = model_ft
+
+        # For ResNet
+        self.seq1 = nn.Sequential(
+            self.model.conv1,
+            self.model.bn1,
+            self.model.relu,
+            self.model.maxpool,
+
+            self.model.layer1).to(self.dev0)
+
+        self.seq2 = nn.Sequential(
+            self.model.layer2,
+            self.model.layer3,
+            self.model.layer4,
+            self.model.avgpool).to(self.dev1)
+
+        # 512 for ResNet18, 2048 for ResNet50. Internal perceptrons be reduced to 512.
+        self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),nn.ReLU(inplace=True)).to(self.dev1)
+        self.proj_head_disc = nn.Sequential(nn.Linear(512, 1024), nn.BatchNorm1d(1024), 
+            nn.ReLU(inplace=True), nn.Linear(1024, fea_dim)).to(self.dev1)
+
+        self.classifier = ClassBlock(512, class_num).to(self.dev1)
+        self.classifier.apply(weights_init_classifier)
+
+    def forward(self, x):
+        splits = iter(x.split(self.split_size, dim=0))
+        s_next = next(splits)
+
+        # For ResNet
+        s_prev = self.seq1(s_next).to(self.dev1)
+
+        # For EfficientNet
+        #s_prev = self.model.extract_features(s_next)
+        #s_prev = self.model._avg_pooling(s_prev)
+        #fea = torch.flatten(s_prev, 1).to(self.dev0)
+
+        pre_l, pred_l = [], []
+
+        for s_next in splits:
+            # Runs on dev0
+            s_prev = self.seq2(s_prev)
+            fea = torch.flatten(s_prev, 1)
+            proj = self.proj_head_used(fea)
+            pre_l.append(self.proj_head_disc(proj))
+            pred_l.append(self.classifier(proj))
+
+            # Runs on dev1
+            s_prev = self.seq1(s_next).to(self.dev1)
+
+            # For EfficientNet
+            #s_prev = self.model.extract_features(s_next)
+            #s_prev = self.model._avg_pooling(s_prev)
+            #fea = torch.flatten(s_prev, 1).to(self.dev0)
+
+        # Runs on dev0
+        #proj = self.proj_head_used(fea)
+        s_prev = self.seq2(s_prev)
+        fea = torch.flatten(s_prev, 1)
+        proj = self.proj_head_used(fea)
+        pre_l.append(self.proj_head_disc(proj))
+        pred_l.append(self.classifier(proj))
+
+        return torch.cat(pre_l).to(self.dev0), torch.cat(pred_l).to(self.dev0)
+
+class MixSim_Model_Single(nn.Module):
+    def __init__(self, class_num, devices=[0], dropout=0.2):
+        super(MixSim_Model_Single, self).__init__()
+
+        fea_dim = 256
+
+        model_ft = models.resnet18(pretrained=False)
+        #model_ft = EfficientNet.from_name('efficientnet-b3', dropout_rate=dropout)
+
+        self.model = model_ft
+        self.proj_head_used = nn.Sequential(nn.Linear(512, 512),nn.ReLU(inplace=True))
+        self.proj_head_disc = nn.Sequential(nn.Linear(512, 512), nn.BatchNorm1d(512), 
+            nn.ReLU(inplace=True), nn.Linear(512, fea_dim))
+
+        self.classifier = ClassBlock(512, class_num)
+        self.classifier.apply(weights_init_classifier)
+
+    def forward(self, x):
+        # For Resnet
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.avgpool(x)
+
+        # For EfficientNet
+        #x = self.model.extract_features(x)
+        #x = self.model._avg_pooling(x)
+
+        fea = torch.flatten(x, 1)
+
+        # Layers used in unlabeled pre-training
+        proj = self.proj_head_used(fea)
+        pre = self.proj_head_disc(proj)
+
+        # Classification model using half of projection head
+        pred = self.classifier(proj)
+        return pre, pred
+
+
 ######################################################################       
 # Define the ResNet18-based Model
 ######################################################################     
