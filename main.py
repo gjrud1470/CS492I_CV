@@ -328,7 +328,7 @@ def main():
         train_transforms = transforms.Compose([
             transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.6),
+            transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
             transforms.RandomGrayscale(p=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
@@ -370,7 +370,6 @@ def main():
         train_criterion_pre = NCELoss()
         train_criterion_fine = NCELoss()
         train_criterion_distill = SemiLoss()
-        # train_criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
@@ -402,9 +401,9 @@ def main():
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
             best_acc = max(acc_top1, best_acc)
-            for w in range(5):
-                is_weighted_best[w] = acc_top1 + ((w+1) * 0.2 * acc_top5) > best_weight_acc[w]
-                best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.2 * acc_top5), best_weight_acc[w])
+            for w in range(4):
+                 is_weighted_best[w] = acc_top1 + ((w+1) * 0.5 * acc_top5) > best_weight_acc[w]
+                 best_weight_acc[w] = max(acc_top1 + ((w+1) * 0.5 * acc_top5), best_weight_acc[w])
             if is_best:
                 print('model achieved the best accuracy ({:.3f}%) - saving best checkpoint...'.format(best_acc))
                 if IS_ON_NSML:
@@ -416,7 +415,7 @@ def main():
                     if IS_ON_NSML:
                         nsml.save(opts.name + '_{}w_best'.format(2*(w+1)))
                     else:
-                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(2*(w+1))))
+                        torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(5*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
                 if IS_ON_NSML:
                     nsml.save(opts.name + '_e{}'.format(epoch))
@@ -670,10 +669,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             losses_x_curr.update(loss_x.item(), inputs_x.size(0))
             losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
-            # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
+            # compute gradient and do SGD step using amp
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
