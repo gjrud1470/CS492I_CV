@@ -29,7 +29,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ImageDataLoader import SimpleImageLoader
-from models import Res18, Res50, Dense121, Res18_basic, MixSim_Model
+from models import Res18, Res50, Dense121, Res18_basic, MixSim_Model, MixSim_Model_Single
 
 import nsml
 from nsml import DATASET_PATH, IS_ON_NSML
@@ -286,11 +286,11 @@ def main():
         torch.cuda.manual_seed_all(seed)
 
         #Setup for DistributedDataParallel
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
+        #os.environ['MASTER_ADDR'] = 'localhost'
+        #os.environ['MASTER_PORT'] = '12355'
 
         # initialize the process group
-        dist.init_process_group("gloo")
+        #dist.init_process_group("gloo")
     else:
         print("Currently using CPU (GPU is highly recommended)")
 
@@ -325,11 +325,11 @@ def main():
 
     if opts.mode == 'train':
         # set multi-gpu
-        if len(opts.gpu_ids.split(',')) > 1:
+        #if len(opts.gpu_ids.split(',')) > 1:
             #model = nn.DataParallel(model)
             #ema_model = nn.DataParallel(ema_model)
-            model = DDP(model)
-            model = DDP(model)
+            #model = DDP(model)
+            #model = DDP(model)
         model.train()
         ema_model.train()
 
@@ -434,8 +434,8 @@ def main():
 
 
     # cleanup (DistributedDataParallel)
-    if use_gpu:
-        dist.destroy_process_group()
+    #if use_gpu:
+    #    dist.destroy_process_group()
 
 def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
@@ -462,13 +462,14 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             
             if use_gpu :
                 dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                #dev0 = 'cuda'
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
 
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                pre_u1, _, _ = model(inputs_u1)
-                pre_u2, _, _ = model(inputs_u2)
+                pre_u1, _ = model(inputs_u1)
+                pre_u2, _ = model(inputs_u2)
 
             loss = criterion(pre_u1, pre_u2, opts.temperature)
             
@@ -529,12 +530,13 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             
             if use_gpu :
                 dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                #dev0 = 'cuda'
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                _, _, logits = model(inputs_x)
+                _, logits = model(inputs_x)
 #                logits = [logit]
 #                for i in range(1, len(inputs_x)):
 #                    _, _, logit = model(inputs_x[i])
@@ -561,7 +563,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                _, _, pred_x1 = model(inputs_x)
+                _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step, loss=losses_curr.avg)
@@ -630,13 +632,14 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             
             if use_gpu :
                 dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
+                #dev0 = 'cuda'
                 inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
                 inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
             
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                _, _, pred_u1 = model(inputs_u1)
-                _, _, pred_u2 = model(inputs_u2)
+                _, pred_u1 = model(inputs_u1)
+                _, pred_u2 = model(inputs_u2)
                 pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
                 pt = pred_u_all**(1/opts.T)
                 targets_u = pt / pt.sum(dim=1, keepdim=True)
@@ -662,10 +665,10 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             optimizer.zero_grad()
            
             with torch.cuda.amp.autocast():
-                _, _, logits_temp = model(mixed_input[0])
+                _, logits_temp = model(mixed_input[0])
                 logits = [logits_temp]
                 for newinput in mixed_input[1:]:
-                    _, _, logits_temp = model(newinput)
+                    _, logits_temp = model(newinput)
                     logits.append(logits_temp)        
                 
             # put interleaved samples back
@@ -697,7 +700,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
-                _, _, pred_x1 = model(inputs_x)
+                _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
@@ -732,7 +735,7 @@ def validation(opts, validation_loader, model, epoch, use_gpu):
                 dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 inputs = inputs.to(dev0)
             nCnt +=1
-            _, _, preds = model(inputs)
+            _, preds = model(inputs)
 
             acc_top1 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=1)*100
             acc_top5 = top_n_accuracy_score(labels.numpy(), preds.data.cpu().numpy(), n=5)*100
