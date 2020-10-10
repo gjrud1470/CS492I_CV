@@ -10,7 +10,7 @@ from PIL import Image
 PARAMETER_MAX = 10
 
 # Random Augmentation
-# -> from Augmnetation pool, pick n augmentation randomly
+# from Augmnetation pool, pick n augmentation randomly
 # n is given in aug_fix.py
 
 # Augmentations

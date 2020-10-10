@@ -77,7 +77,8 @@ class SimpleImageLoader(torch.utils.data.Dataset):
             label = self.imclasses[index]
             return img, label
         else:        
-            # 하나 weak, 하나 strong -> train function 안에서 image loader로 받을 때 input u1에 weak, input u2에 strong
+            # img1 -> weak augmentation, img2 -> strong 
+            # train function 안에서 image loader로 받을 때 input u1에 weak, input u2에 strong
             img1, img2 = self.TransformTwice(img)
             return img1, img2
         

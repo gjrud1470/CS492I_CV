@@ -40,11 +40,13 @@ class NetworkBlock(nn.Module):
     def __init__(self, nb_layers, input_dim, output_dim, block, stride, dropRate=0.0, activate_before_residual=False):
         super(NetworkBlock, self).__init__()
         self.layer = self._make_layer(block, input_dim, output_dim, nb_layers, stride, dropRate, activate_before_residual)
+    
     def _make_layer(self, block, input_dim, output_dim, nb_layers, stride, dropRate, activate_before_residual):
         layers = []
         for i in range(int(nb_layers)):
             layers.append(block(i == 0 and input_dim or output_dim, output_dim, i == 0 and stride or 1, dropRate, activate_before_residual))
         return nn.Sequential(*layers)
+    
     def forward(self, x):
         return self.layer(x)
 

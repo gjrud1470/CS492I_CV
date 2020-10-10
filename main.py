@@ -555,7 +555,7 @@ def train(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_o
     return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
 
 
-# Train with FixMatch
+# Train with FixMatch -> in progress
 def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
@@ -612,7 +612,8 @@ def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimiz
                 # compute guessed labels of unlabel samples
                 _, pred_u1 = model(inputs_u1) # weak augmentation
                 _, pred_u2 = model(inputs_u2) # strong augmentation
-                # label guessing -> fixmatch는 pred_u1만 사용(no softmax, maximum이 일정 이상이면 사용, 아니면 continue)
+                
+                # label guessing
                 if (torch.max(pred_u1) >= 0.5) : 
                     print("max pred is over 0.5 / ", torch.max(pred_u1))
                     pred_u1_max = torch.max(pred_u1)
@@ -634,7 +635,7 @@ def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimiz
 
                 else :
                     print("max pred is under 0.5 / ", torch.max(pred_u1))
-                    # inputs랑 targets에서 빼기
+                    # reduce low-accuracy inputs & targets
                     inputs_u1 = torch.empty(inputs_u1.size())
                     inputs_u2 = torch.empty(inputs_u2.size())
                     targets_u = torch.empty(batch_size, classno)
@@ -647,7 +648,6 @@ def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimiz
             all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
             all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
 
-            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
             fixed_input = list(torch.split(all_inputs, batch_size))
             fixed_target = all_targets
             optimizer.zero_grad()
@@ -656,7 +656,6 @@ def train_fixMatch(opts, train_loader, unlabel_loader, model, criterion, optimiz
                 fea, logits_temp = model(fixed_input[0])
                 logits = [logits_temp]
                 for newinput in fixed_input[1:]:
-             #   with torch.cuda.amp.autocast():
                     fea, logits_temp = model(newinput)
                     logits.append(logits_temp)        
                 
