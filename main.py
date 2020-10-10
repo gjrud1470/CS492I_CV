@@ -73,7 +73,32 @@ def linear_rampup(current, rampup_length):
     else:
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
-        
+
+def exponential_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        phase = 1.0 - current
+        result = float(np.exp(-5.0 * phase * phase))
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
+def quad_rampup(current, rampup_length) : 
+    if rampup_length == 0:
+        return 1.0
+    else : 
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        result = float(current*current)
+
+        if result <= 1.0 : 
+            return result
+        else : 
+            return 1.0
+
 class SemiLoss(object):
     def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
         probs_u = torch.softmax(outputs_u, dim=1)
