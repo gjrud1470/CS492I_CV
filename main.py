@@ -19,8 +19,10 @@ from torch.optim import lr_scheduler
 import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+
+import pytorch_warmup as warmup
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
+#from torchlars import LARS
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -74,6 +76,8 @@ def linear_rampup(current, rampup_length):
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
 
+
+# Exponential rampup
 def exponential_rampup(current, rampup_length) : 
     if rampup_length == 0:
         return 1.0
@@ -87,6 +91,7 @@ def exponential_rampup(current, rampup_length) :
         else : 
             return 1.0
 
+# Quadratic rampup
 def quad_rampup(current, rampup_length) : 
     if rampup_length == 0:
         return 1.0
@@ -99,6 +104,7 @@ def quad_rampup(current, rampup_length) :
         else : 
             return 1.0
 
+          
 class SemiLoss(object):
     def __call__(self, outputs_x, targets_x, outputs_u, targets_u, epoch, final_epoch):
         probs_u = torch.softmax(outputs_u, dim=1)
@@ -106,6 +112,10 @@ class SemiLoss(object):
         Lu = torch.mean((probs_u - targets_u)**2)
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
+######################################################################
+# the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
+# Noise Contrastive Estimation(NCE) Loss with cosine similarity
+######################################################################
 class NCELoss(object):
     def __init__(self):
         self.sim_fn = nn.CosineSimilarity(dim=-1)
@@ -253,16 +263,17 @@ parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help
 parser.add_argument('--name',default='MixSim', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
 parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
-parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio')
+parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio related to labeled')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
-parser.add_argument('--ensemble_size', type=int, default=1, help='number of models for ensembling')
+parser.add_argument('--ensemble_size', type=int, default=1, help='number of models to perform ensembling')
 
 # basic hyper-parameters
 parser.add_argument('--momentum', type=float, default=0.9, metavar='LR', help=' ')
-parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+parser.add_argument('--ema_optimizer_lr', type=float, default=1e-4, metavar='LR', help='learning rate')
 parser.add_argument('--imResize', default=256, type=int, help='')
 parser.add_argument('--imsize', default=224, type=int, help='')
 parser.add_argument('--ema_decay', type=float, default=0.999, help='ema decay rate (0: no ema model)')
+parser.add_argument('--optimizer_lr', type=float, default=1e-2, help='learning rate for optimizer')
 parser.add_argument('--optimizer_eps', type=float, default=1e-3, help='')
 
 # arguments for logging and backup
@@ -311,8 +322,11 @@ def main():
     else:
         print("Currently using CPU (GPU is highly recommended)")
 
-
-    # Set this value to True if we use "MixSim_Model". Doesn't apply for MixSim_Model_Single
+    ######################################################################       
+    # Set this value to True if we use "MixSim_Model".
+    # "MixSim_Model" sends its parameters to gpu devices on its own for model parallel.
+    # Doesn't apply for "MixSim_Model_Single", which uses single gpu. So set is_mixsim = False.
+    ###################################################################### 
     is_mixsim = True
 
     # Set model
@@ -329,6 +343,7 @@ def main():
     n_parameters = sum([p.data.nelement() for p in model.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
+    # "MixSim_Model" sends its parameters to gpu devices on its own.
     if use_gpu and (not is_mixsim):
         model.cuda()
         ema_model.cuda()
@@ -350,7 +365,10 @@ def main():
         model.train()
         ema_model.train()
 
-        train_transforms = transforms.Compose([
+        ######################################################################      
+        # Data Augmentation for train data and unlabeled data
+        ######################################################################      
+        data_transforms = transforms.Compose([
             transforms.RandomResizedCrop(opts.imsize, interpolation=3),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
@@ -362,12 +380,12 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=train_transforms), 
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=data_transforms), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=train_transforms),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=data_transforms),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
@@ -384,23 +402,33 @@ def main():
         if opts.steps_per_epoch < 0:
             opts.steps_per_epoch = len(train_loader)
 
-        # Set optimizer
+        ######################################################################
+        # Set Optimizer
+        # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
+        # LARS is layer-wise adaptive rate scaling
+        # LARSWrapper helps stability with huge batch size.
+        ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        optimizer = t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps)
-        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-        ema_optimizer= WeightEMA(model, ema_model, lr=opts.lr, alpha=opts.ema_decay)
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
+        base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
+        optimizer = LARSWrapper(base_optimizer, eta = 0.1)
+        ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion_pre = NCELoss()
         train_criterion_fine = NCELoss()
         train_criterion_distill = SemiLoss()
 
+        ######################################################################
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
+        ######################################################################
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
-        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.epochs)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.steps_per_epoch * opts.epochs // 10)
+
+        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=opts.steps_per_epoch * 10)
         
         # Train and Validation 
         best_acc = -1
@@ -409,19 +437,23 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (epoch <= opts.pre_train_epoch):
-                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
-                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
                 continue
             else:
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler)
+                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: distillation'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
             
             # scheduler.step()
 
+            ######################################################################
+            # For each weights=[0,0.5,1.0,1.5,2.0], save the best model with
+            # best accuracy of (acc_top1 + weights * acc_top5).
+            ######################################################################
             # print('start validation')
             acc_top1, acc_top5 = validation(opts, validation_loader, ema_model, epoch, use_gpu)
             is_best = acc_top1 > best_acc
@@ -447,8 +479,10 @@ def main():
                 else:
                     torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_e{}'.format(epoch)))
 
-
-def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Pre-training method described in SimCLRv2 paper
+######################################################################
+def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
     model.train()
@@ -468,6 +502,7 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
                 inputs_u1, inputs_u2 = data         
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
@@ -487,7 +522,8 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
+            warmup_scheduler.dampen()
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step)
@@ -501,7 +537,10 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
         
     return loss
 
-def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Fine-tuning method described in SimCLRv2 paper
+######################################################################
+def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -538,6 +577,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
@@ -556,14 +596,11 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             losses_curr.update(loss.item(), inputs_x.size(0))
 
             # compute gradient and do SGD step
-            # loss.backward()
-            # optimizer.step()
-            # ema_optimizer.step()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples
@@ -587,8 +624,11 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
         
     return losses.avg, acc_top1.avg, acc_top5.avg
 
-                
-def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler):
+######################################################################
+# Instead of Knowledge-Distillation from SimCLRv2 paper,
+# we use MixMatch method for distillation.
+######################################################################
+def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
 
@@ -635,6 +675,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
             
             if use_gpu :
+                # Send input value to device 0, where first parameters of MixSim_Model is.
                 if is_mixsim:
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
@@ -699,7 +740,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             scaler.step(optimizer)
             ema_optimizer.step()
             scaler.update()
-            scheduler.step(float(loss))
+            scheduler.step()
 
             with torch.no_grad():
                 # compute guessed labels of unlabel samples

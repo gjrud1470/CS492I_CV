@@ -104,7 +104,15 @@ class ClassBlock(nn.Module):
         return x    
 
 ######################################################################       
-# SimCLR-style Model using MixMatch ClassBlock
+# SimCLRv2 Model using MixMatch ClassBlock(classifier),
+# we leave first layer of projection head to be used in fine-tuning. (self.proj_head_used)
+# Can either be based on resnet18, or resnet50.
+# Set input size of self.proj_head_used as 512 for resnet18, 2048 for resnet50.
+# Internal perceptron numbers can be changed for projection heads.
+
+# This model implements model parallel, splitting its model into two GPU's.
+# Then, it speeds up processing by pipelining inputs, and we can achieve concurrency
+# since PyTorch launches CUDA operations asynchronously.
 ###################################################################### 
 class MixSim_Model(nn.Module):
     def __init__(self, class_num, devices, dropout=0.2, split_size=10):
@@ -135,7 +143,7 @@ class MixSim_Model(nn.Module):
             self.model.layer4,
             self.model.avgpool).to(self.dev1)
 
-        # 512 for ResNet18, 2048 for ResNet50. Internal perceptrons be reduced to 512.
+        # 512 for ResNet18, 2048 for ResNet50.
         self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),nn.ReLU(inplace=True)).to(self.dev1)
         self.proj_head_disc = nn.Sequential(nn.Linear(512, 1024), nn.BatchNorm1d(1024), 
             nn.ReLU(inplace=True), nn.Linear(1024, fea_dim)).to(self.dev1)
@@ -183,6 +191,13 @@ class MixSim_Model(nn.Module):
 
         return torch.cat(pre_l).to(self.dev0), torch.cat(pred_l).to(self.dev0)
 
+######################################################################
+# SimCLRv2 Model using MixMatch ClassBlock(classifier),
+# we leave first layer of projection head to be used in fine-tuning. (self.proj_head_used)
+# Can either be based on resnet18, or resnet50.
+# Set input size of self.proj_head_used as 512 for resnet18, 2048 for resnet50.
+# Internal perceptron numbers can be changed for projection heads.
+######################################################################
 class MixSim_Model_Single(nn.Module):
     def __init__(self, class_num, devices=[0], dropout=0.2):
         super(MixSim_Model_Single, self).__init__()
