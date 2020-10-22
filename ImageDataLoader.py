@@ -18,7 +18,7 @@ class TransformTwice:
         return out1, out2    
     
 class SimpleImageLoader(torch.utils.data.Dataset):
-    def __init__(self, rootdir, split, ids=None, transform=None, loader=default_image_loader):
+    def __init__(self, rootdir, split, ids=None, transform=None, strong_transform=None, loader=default_image_loader):
         if split == 'test':
             self.impath = os.path.join(rootdir, 'test_data')
             meta_file = os.path.join(self.impath, 'test_meta.txt')
@@ -45,6 +45,7 @@ class SimpleImageLoader(torch.utils.data.Dataset):
                             imclasses.append(int(label))
 
         self.transform = transform
+        self.strong_transform = strong_transform
         self.TransformTwice = TransformTwice(transform)
         self.loader = loader
         self.split = split
@@ -59,6 +60,12 @@ class SimpleImageLoader(torch.utils.data.Dataset):
             if self.transform is not None:
                 img = self.transform(img)
             return img
+        elif self.split == 'fixmatch':
+            if self.transform is not None:
+                weak_img = self.transform(img)
+            if self.strong_transform is not None:
+                str_img = self.strong_transform(img)
+            return weak_img, str_img
         elif self.split != 'unlabel':
             if self.transform is not None:
                 img = self.transform(img)

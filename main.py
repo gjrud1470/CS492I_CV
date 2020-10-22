@@ -20,6 +20,7 @@ import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
+from PIL import Image
 import pytorch_warmup as warmup
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 #from torchlars import LARS
@@ -256,13 +257,13 @@ def bind_nsml(model):
 ######################################################################
 parser = argparse.ArgumentParser(description='Sample Product200K Training')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N', help='number of start epoch (default: 1)')
-parser.add_argument('--epochs', type=int, default=800, metavar='N', help='number of epochs to train (default: 200)')
+parser.add_argument('--epochs', type=int, default=400, metavar='N', help='number of epochs to train (default: 200)')
 parser.add_argument('--steps_per_epoch', type=int, default=30, metavar='N', help='number of steps to train per epoch (-1: num_data//batchsize)')
 
 # basic settings
 parser.add_argument('--name',default='MixSim', type=str, help='output model name')
 parser.add_argument('--gpu_ids',default='0', type=str,help='gpu_ids: e.g. 0  0,1,2  0,2')
-parser.add_argument('--batchsize', default=140, type=int, help='batchsize')
+parser.add_argument('--batchsize', default=200, type=int, help='batchsize')
 parser.add_argument('--unlabelratio', default=1, type=int, help='unlabeled dataset ratio related to labeled')
 parser.add_argument('--seed', type=int, default=123, help='random seed')
 parser.add_argument('--ensemble_size', type=int, default=1, help='number of models to perform ensembling')
@@ -286,7 +287,7 @@ parser.add_argument('--lambda_u', default=75, type=float)
 parser.add_argument('--T', default=0.5, type=float)
 
 # hyper-parameters for SimCLR
-parser.add_argument('--pre_train_epoch', default=400, type=int, help='pre-training epoch')
+parser.add_argument('--pre_train_epoch', default=120, type=int, help='pre-training epoch')
 parser.add_argument('--fine_tune_epoch', default=30, type=int, help='fine-tuning epoch')
 parser.add_argument('--temperature', default=1.0, type=float, help='temperature value for SimCLR')
 
@@ -327,14 +328,15 @@ def main():
     # "MixSim_Model" sends its parameters to gpu devices on its own for model parallel.
     # Doesn't apply for "MixSim_Model_Single", which uses single gpu. So set is_mixsim = False.
     ###################################################################### 
-    is_mixsim = True
+    is_mixsim = False
+    need_pretrain = True
 
     # Set model
-    model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
+    model = MixSim_Model_Single(NUM_CLASSES, opts.gpu_ids.split(','))
     model.eval()
 
     # set EMA model
-    ema_model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
+    ema_model = MixSim_Model_Single(NUM_CLASSES, opts.gpu_ids.split(','))
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
@@ -368,11 +370,22 @@ def main():
         ######################################################################      
         # Data Augmentation for train data and unlabeled data
         ######################################################################      
-        data_transforms = transforms.Compose([
-            transforms.RandomResizedCrop(opts.imsize, interpolation=3),
+        weak_transform = transforms.Compose([
+            transforms.Resize(opts.imResize),
+            #transforms.RandomResizedCrop(opts.imsize),
+            transforms.CenterCrop(opts.imsize),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
+
+        strong_transform = transforms.Compose([
+            transforms.Resize(opts.imResize),
+            #transforms.RandomResizedCrop(opts.imsize),
+            transforms.CenterCrop(opts.imsize),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
             transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply([transforms.RandomAffine(30, shear=(-30, 30, -30, 30), resample=Image.BILINEAR)], p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
 
@@ -380,19 +393,24 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=data_transforms), 
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=weak_transform), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=data_transforms),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=weak_transform),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
+
+        unlabel_loader_fixmatch = torch.utils.data.DataLoader(
+            SimpleImageLoader(DATASET_PATH, 'fixmatch', unl_ids, transform=weak_transform, strong_transform=strong_transform),
+                batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
+        print('unlabel_loader_fixmatch done')    
 
         validation_loader = torch.utils.data.DataLoader(
             SimpleImageLoader(DATASET_PATH, 'val', val_ids,
                                transform=transforms.Compose([
-                                   transforms.Resize(opts.imResize, interpolation=3),
+                                   transforms.Resize(opts.imResize),
                                    transforms.CenterCrop(opts.imsize),
                                    transforms.ToTensor(),
                                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])),
@@ -408,17 +426,20 @@ def main():
         # LARS is layer-wise adaptive rate scaling
         # LARSWrapper helps stability with huge batch size.
         ######################################################################
-        # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
-        # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+        optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr, weight_decay=5e-4)
         # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
-        base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
-        optimizer = LARSWrapper(base_optimizer, eta = 0.1)
+        # optimizer = optim.SGD(model.parameters(), lr=opts.optimizer_lr, momentum=opts.momentum, weight_decay=5e-4, nesterov=True)
+        # base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
+        #optimizer = LARSWrapper(base_optimizer, eta = 0.1)
+
+        fine_optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr)
+
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
         train_criterion_pre = NCELoss()
         train_criterion_fine = NCELoss()
-        train_criterion_distill = SemiLoss()
+        train_criterion_distill = NCELoss()
 
         ######################################################################
         # INSTANTIATE STEP LEARNING SCHEDULER CLASS
@@ -436,17 +457,17 @@ def main():
         is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
-            if (epoch <= opts.pre_train_epoch):
+            if (need_pretrain and epoch <= opts.pre_train_epoch):
                 pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
-            elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
-                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
+            elif (need_pretrain and epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
+                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, fine_optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
                 continue
             else:
-                loss, loss_x, loss_u, avg_top1, avg_top5 = train_distill(opts, train_loader, unlabel_loader, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
-                print('epoch {:03d}/{:03d} finished, loss: {:.3f}, loss_x: {:.3f}, loss_un: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: distillation'.format(epoch, opts.epochs, loss, loss_x, loss_u, avg_top1, avg_top5))
+                loss = train_distill(opts, train_loader, unlabel_loader_fixmatch, model, train_criterion_distill, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
+                print('epoch {:03d}/{:03d} finished, loss: {:.3f}: distillation'.format(epoch, opts.epochs, loss))
             
             # scheduler.step()
 
@@ -650,29 +671,15 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
     out = False
     local_step = 0
     while not out:
-        labeled_train_iter = iter(train_loader)
         unlabeled_train_iter = iter(unlabel_loader)
-        for batch_idx in range(len(train_loader)):
-            try:
-                data = labeled_train_iter.next()
-                inputs_x, targets_x = data
-            except:
-                labeled_train_iter = iter(train_loader)       
-                data = labeled_train_iter.next()
-                inputs_x, targets_x = data
+        for batch_idx in range(len(unlabeled_train_iter)):
             try:
                 data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data
+                inputs_w, inputs_s = data
             except:
                 unlabeled_train_iter = iter(unlabel_loader)       
                 data = unlabeled_train_iter.next()
-                inputs_u1, inputs_u2 = data         
-        
-            batch_size = inputs_x.size(0)
-            # Transform label to one-hot
-            classno = NUM_CLASSES 
-            targets_org = targets_x
-            targets_x = torch.zeros(batch_size, classno).scatter_(1, targets_x.view(-1,1), 1)        
+                inputs_w, inputs_s = data            
             
             if use_gpu :
                 # Send input value to device 0, where first parameters of MixSim_Model is.
@@ -680,60 +687,25 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
                     dev0 = 'cuda:{}'.format(opts.gpu_ids.split(',')[0])
                 else:
                     dev0 = 'cuda'
-                inputs_x, targets_x = inputs_x.to(dev0), targets_x.to(dev0)
-                inputs_u1, inputs_u2 = inputs_u1.to(dev0), inputs_u2.to(dev0)
+                inputs_w, inputs_s = inputs_w.to(dev0), inputs_s.to(dev0)
             
             with torch.no_grad():
-                # compute guessed labels of unlabel samples
-                _, pred_u1 = model(inputs_u1)
-                _, pred_u2 = model(inputs_u2)
-                pred_u_all = (torch.softmax(pred_u1, dim=1) + torch.softmax(pred_u2, dim=1)) / 2
-                pt = pred_u_all**(1/opts.T)
+                # compute guessed labels of weakly augmented unlabel samples and sharpen
+                _, pred_w = model(inputs_w)
+                pt = pred_w**(1/opts.T)
                 targets_u = pt / pt.sum(dim=1, keepdim=True)
                 targets_u = targets_u.detach()
-                
-            # mixup
-            all_inputs = torch.cat([inputs_x, inputs_u1, inputs_u2], dim=0)
-            all_targets = torch.cat([targets_x, targets_u, targets_u], dim=0)            
-            
-            lamda = np.random.beta(opts.alpha, opts.alpha)        
-            lamda= max(lamda, 1-lamda)    
-            newidx = torch.randperm(all_inputs.size(0))
-            input_a, input_b = all_inputs, all_inputs[newidx]
-            target_a, target_b = all_targets, all_targets[newidx]        
-            
-            mixed_input = lamda * input_a + (1 - lamda) * input_b
-            mixed_target = lamda * target_a + (1 - lamda) * target_b
-            
-            # interleave labeled and unlabed samples between batches to get correct batchnorm calculation 
-            mixed_input = list(torch.split(mixed_input, batch_size))
-            mixed_input = interleave(mixed_input, batch_size)
 
             optimizer.zero_grad()
-           
-            with torch.cuda.amp.autocast():
-                _, logits_temp = model(mixed_input[0])
-                logits = [logits_temp]
-                for newinput in mixed_input[1:]:
-                    _, logits_temp = model(newinput)
-                    logits.append(logits_temp)        
-                
-            # put interleaved samples back
-            logits = interleave(logits, batch_size)
-            logits_x = logits[0]
-            logits_u = torch.cat(logits[1:], dim=0)            
             
-            loss_x, loss_un, weigts_mixing = criterion(logits_x, mixed_target[:batch_size], logits_u, mixed_target[batch_size:], epoch+batch_idx/len(train_loader), opts.epochs)
-            loss = loss_x + weigts_mixing * loss_un
+            with torch.cuda.amp.autocast():
+                _, pred_s = model(inputs_s)
 
+            loss = criterion(targets_u, pre_s, opts.temperature)             
+            
             losses.update(loss.item(), inputs_x.size(0))
-            losses_x.update(loss_x.item(), inputs_x.size(0))
-            losses_un.update(loss_un.item(), inputs_x.size(0))
-            weight_scale.update(weigts_mixing, inputs_x.size(0))
 
             losses_curr.update(loss.item(), inputs_x.size(0))
-            losses_x_curr.update(loss_x.item(), inputs_x.size(0))
-            losses_un_curr.update(loss_un.item(), inputs_x.size(0))
                     
             # compute gradient and do SGD step using amp
             scaler.scale(loss).backward()
@@ -748,14 +720,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
-                losses_curr.reset()
-                losses_x_curr.reset()
-                losses_un_curr.reset()
-
-            acc_top1b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=1)*100
-            acc_top5b = top_n_accuracy_score(targets_org.data.cpu().numpy(), pred_x1.data.cpu().numpy(), n=5)*100    
-            acc_top1.update(torch.as_tensor(acc_top1b), inputs_x.size(0))        
-            acc_top5.update(torch.as_tensor(acc_top5b), inputs_x.size(0))   
+                losses_curr.reset() 
 
             local_step += 1
             global_step += 1
@@ -764,7 +729,7 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
                 out = True
                 break
         
-    return losses.avg, losses_x.avg, losses_un.avg, acc_top1.avg, acc_top5.avg
+    return losses.avg
 
 
 def validation(opts, validation_loader, model, epoch, use_gpu):
