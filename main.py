@@ -327,14 +327,14 @@ def main():
     # "MixSim_Model" sends its parameters to gpu devices on its own for model parallel.
     # Doesn't apply for "MixSim_Model_Single", which uses single gpu. So set is_mixsim = False.
     ###################################################################### 
-    is_mixsim = True
+    is_mixsim = False
 
     # Set model
-    model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
+    model = MixSim_Model_Single(NUM_CLASSES, opts.gpu_ids.split(','))
     model.eval()
 
     # set EMA model
-    ema_model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
+    ema_model = MixSim_Model_Single(NUM_CLASSES, opts.gpu_ids.split(','))
     for param in ema_model.parameters():
         param.detach_()
     ema_model.eval()
