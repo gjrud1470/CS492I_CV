@@ -566,12 +566,9 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
     scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
-    losses_x = AverageMeter()
     
     losses_curr = AverageMeter()
-    losses_x_curr = AverageMeter()
 
-    weight_scale = AverageMeter()
     acc_top1 = AverageMeter()
     acc_top5 = AverageMeter()
     
@@ -624,7 +621,7 @@ def train_fine(opts, train_loader, model, criterion, optimizer, ema_optimizer, e
             scheduler.step()
 
             with torch.no_grad():
-                # compute guessed labels of unlabel samples
+                # compute guessed labels of label samples
                 _, pred_x1 = model(inputs_x)
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
@@ -654,16 +651,8 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
     scaler = torch.cuda.amp.GradScaler()
 
     losses = AverageMeter()
-    losses_x = AverageMeter()
-    losses_un = AverageMeter()
     
     losses_curr = AverageMeter()
-    losses_x_curr = AverageMeter()
-    losses_un_curr = AverageMeter()
-
-    weight_scale = AverageMeter()
-    acc_top1 = AverageMeter()
-    acc_top5 = AverageMeter()
     
     model.train()
     
@@ -701,11 +690,11 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             with torch.cuda.amp.autocast():
                 _, pred_s = model(inputs_s)
 
-            loss = criterion(targets_u, pre_s, opts.temperature)             
+            loss = criterion(targets_u, pred_s, opts.temperature)             
             
-            losses.update(loss.item(), inputs_x.size(0))
+            losses.update(loss.item(), inputs_w.size(0))
 
-            losses_curr.update(loss.item(), inputs_x.size(0))
+            losses_curr.update(loss.item(), inputs_w.size(0))
                     
             # compute gradient and do SGD step using amp
             scaler.scale(loss).backward()
@@ -714,12 +703,8 @@ def train_distill(opts, train_loader, unlabel_loader, model, criterion, optimize
             scaler.update()
             scheduler.step()
 
-            with torch.no_grad():
-                # compute guessed labels of unlabel samples
-                _, pred_x1 = model(inputs_x)
-
             if IS_ON_NSML and global_step % opts.log_interval == 0:
-                nsml.report(step=global_step, loss=losses_curr.avg, loss_x=losses_x_curr.avg, loss_un=losses_un_curr.avg)
+                nsml.report(step=global_step, loss=losses_curr.avg)
                 losses_curr.reset() 
 
             local_step += 1
