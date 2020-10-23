@@ -372,8 +372,8 @@ def main():
         ######################################################################      
         weak_transform = transforms.Compose([
             transforms.Resize(opts.imResize),
-            #transforms.RandomResizedCrop(opts.imsize),
-            transforms.CenterCrop(opts.imsize),
+            transforms.RandomResizedCrop(opts.imsize),
+            #transforms.CenterCrop(opts.imsize),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
@@ -381,11 +381,12 @@ def main():
         strong_transform = transforms.Compose([
             transforms.Resize(opts.imResize),
             #transforms.RandomResizedCrop(opts.imsize),
-            transforms.CenterCrop(opts.imsize),
+            #transforms.CenterCrop(opts.imsize),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([transforms.ColorJitter(0.7, 0.7, 0.7, 0.2)], p=0.5),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([transforms.RandomAffine(30, shear=(-30, 30, -30, 30), resample=Image.BILINEAR)], p=0.5),
+            transforms.RandomResizedCrop(opts.imsize),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),])
 
