@@ -394,17 +394,17 @@ def main():
         train_ids, val_ids, unl_ids = split_ids(os.path.join(DATASET_PATH, 'train/train_label'), 0.2)
         print('found {} train, {} validation and {} unlabeled images'.format(len(train_ids), len(val_ids), len(unl_ids)))
         train_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=weak_transform), 
+            SimpleImageLoader(DATASET_PATH, 'train', train_ids, transform=weak_transform, strong_transform=strong_transform), 
                 batch_size=opts.batchsize, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('train_loader done')
 
         unlabel_loader = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=weak_transform),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=weak_transform, strong_transform=strong_transform),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader done')    
 
         unlabel_loader_fixmatch = torch.utils.data.DataLoader(
-            SimpleImageLoader(DATASET_PATH, 'fixmatch', unl_ids, transform=weak_transform, strong_transform=strong_transform),
+            SimpleImageLoader(DATASET_PATH, 'unlabel', unl_ids, transform=weak_transform, strong_transform=strong_transform),
                 batch_size=opts.batchsize * opts.unlabelratio, shuffle=True, num_workers=0, pin_memory=True, drop_last=True)
         print('unlabel_loader_fixmatch done')    
 

@@ -10,12 +10,12 @@ def default_image_loader(path):
     return Image.open(path).convert('RGB')
 
 class TransformTwice:
-    def __init__(self, transform):
+    def __init__(self, transform, strong_transform):
         self.transform = transform
+        self.strong_transform = strong_transform
     def __call__(self, inp):
-        #out1 = self.transform(inp)
-        out1 = inp
-        out2 = self.transform(inp)
+        out1 = self.transform(inp)
+        out2 = self.strong_transform(inp)
         return out1, out2    
     
 class SimpleImageLoader(torch.utils.data.Dataset):
@@ -47,7 +47,7 @@ class SimpleImageLoader(torch.utils.data.Dataset):
 
         self.transform = transform
         self.strong_transform = strong_transform
-        self.TransformTwice = TransformTwice(transform)
+        self.TransformTwice = TransformTwice(transform, strong_transform)
         self.loader = loader
         self.split = split
         self.imnames = imnames
@@ -61,12 +61,6 @@ class SimpleImageLoader(torch.utils.data.Dataset):
             if self.transform is not None:
                 img = self.transform(img)
             return img
-        elif self.split == 'fixmatch':
-            if self.transform is not None:
-                weak_img = self.transform(img)
-            if self.strong_transform is not None:
-                str_img = self.strong_transform(img)
-            return weak_img, str_img
         elif self.split != 'unlabel':
             if self.transform is not None:
                 img = self.transform(img)
