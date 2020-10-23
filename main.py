@@ -426,13 +426,13 @@ def main():
         # LARS is layer-wise adaptive rate scaling
         # LARSWrapper helps stability with huge batch size.
         ######################################################################
-        optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr, weight_decay=5e-4)
+        # optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr, weight_decay=5e-4)
         # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
         # optimizer = optim.SGD(model.parameters(), lr=opts.optimizer_lr, momentum=opts.momentum, weight_decay=5e-4, nesterov=True)
-        # base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
-        #optimizer = LARSWrapper(base_optimizer, eta = 0.1)
+        base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
+        optimizer = LARSWrapper(base_optimizer, eta = 0.1)
 
-        fine_optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr)
+        # fine_optimizer = optim.Adam(model.parameters(), lr=opts.optimizer_lr)
 
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
@@ -462,7 +462,7 @@ def main():
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (need_pretrain and epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
-                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, fine_optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
+                loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
                 continue
             else:
