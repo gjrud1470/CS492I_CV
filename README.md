@@ -11,3 +11,4 @@ Paper : https://arxiv.org/abs/1605.07146
 - WideResNet is the network focus on increasing width of network.
 - It shows better performance than original ResNet.
 - We applied WideResNet28-2, but it didn't show better enough performance and spends too much time, so we decided not to use WideResNet on our project.
+- ```wideresnet.py``` is the code that define WideResNet.
