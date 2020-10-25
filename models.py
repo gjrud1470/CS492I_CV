@@ -123,7 +123,7 @@ class MixSim_Model(nn.Module):
         self.dev1 = 'cuda:{}'.format(devices[-1])
         self.split_size = split_size
 
-        model_ft = models.resnet50(pretrained=False)
+        model_ft = models.resnet18(pretrained=False)
         #model_ft = EfficientNet.from_name('efficientnet-b3', dropout_rate=dropout)
 
         self.model = model_ft
@@ -144,7 +144,7 @@ class MixSim_Model(nn.Module):
             self.model.avgpool).to(self.dev1)
 
         # 512 for ResNet18, 2048 for ResNet50.
-        self.proj_head_used = nn.Sequential(nn.Linear(2048, 512),nn.ReLU(inplace=True)).to(self.dev1)
+        self.proj_head_used = nn.Sequential(nn.Linear(512, 512),nn.ReLU(inplace=True)).to(self.dev1)
         self.proj_head_disc = nn.Sequential(nn.Linear(512, 1024), nn.BatchNorm1d(1024), 
             nn.ReLU(inplace=True), nn.Linear(1024, fea_dim)).to(self.dev1)
 
@@ -165,6 +165,7 @@ class MixSim_Model(nn.Module):
 
         pre_l, pred_l = [], []
 
+        # Pipelining inputs
         for s_next in splits:
             # Runs on dev0
             s_prev = self.seq2(s_prev)

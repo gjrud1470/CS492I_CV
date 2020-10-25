@@ -328,6 +328,7 @@ def main():
     # Doesn't apply for "MixSim_Model_Single", which uses single gpu. So set is_mixsim = False.
     ###################################################################### 
     is_mixsim = True
+    need_pretraining = True
 
     # Set model
     model = MixSim_Model(NUM_CLASSES, opts.gpu_ids.split(','))
@@ -435,11 +436,11 @@ def main():
         is_weighted_best = [False] * 5
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
-            if (epoch <= opts.pre_train_epoch):
+            if (need_pretraining and epoch <= opts.pre_train_epoch):
                 pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
-            elif (epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
+            elif (need_pretraining and epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
                 loss, avg_top1, avg_top5 = train_fine(opts, train_loader, model, train_criterion_fine, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, loss: {:.3f}, avg_top1: {:.3f}%, avg_top5: {:.3f}%: fine-tuning'.format(epoch, opts.epochs, loss, avg_top1, avg_top5))
                 continue
