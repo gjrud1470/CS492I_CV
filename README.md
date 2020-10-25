@@ -4,6 +4,10 @@
 - This repository is for 2020 Fall CS492I CV project of Team 4.  
 - In this ```README.md``` we mainly explain about our **Main model with Highest Accuracy**.  
 - You can check the explanation about *Best score model* or *Models that we tried but not used* in other branches.
+	### Members
+		 Hyunjin Kim 20170191
+		 Hyeongshin Yoon 20170438
+		 Kyoung Hur 20180717
 ***
 
 ## Directory Structure
@@ -72,15 +76,14 @@
 > #### Optional Arguments
 > - Specific informations bellow is about the arguments that we used in our experiments.   
 > All arguments are defined in ```main.py```
-> > <pre><code>--epochs : Define the number of training epochs (Default : 800)
-> > --batchsize : Define the size of batch (Default : 140)
-> > --pre_train_epoch : Define the number of pre-training epochs (Default : 400)
-> > --fine_tune_epoch : Define the number of fine-tuning epochs (Default : 30)
-> > --seed : Define the random value of seed (Default : 123)
-> > --optimizer_lr : Define the learning rate for optimizer (Default : 1e-2)
-> > --ema_optimizer_lr : Define the learning rate for EMA optimizer (Default : 1e-4)
-> > --gpu_ids : Define the name of GPUs (Default : '0')
-> > </code></pre>
+	>  >  <pre><code>--epochs				The number of training epochs (Default : 800)
+	>  > --batchsize				The size of batch (Default : 140)
+	>  > --pre_train_epoch		The number of pre-training epochs (Default : 400)
+	>  > --fine_tune_epoch 		The number of fine-tuning epochs (Default : 30)
+	>  > --seed					The random value of seed (Default : 123)
+	>  > --optimizer_lr 			The learning rate for optimizer (Default : 1e-2)
+	>  > --ema_optimizer_lr		The learning rate for EMA optimizer (Default : 1e-4)
+	>  > --gpu_ids				The name of GPUs (Default : '0')</code></pre>
 > 
 > ### 3. For Testing
 > <pre><code>nsml submit [Options] [SESSION_NAME] [CHECKPOINT]
