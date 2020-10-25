@@ -89,8 +89,8 @@ def exponential_rampup(current, rampup_length) :
     if rampup_length == 0:
         return 1.0
     else : 
-        current = np.clip(current, 0.0, rampup_length)
-        phase = 1.0 - current / rampup_length
+        current = np.clip(current / rampup_length, 0.0, 1.0)
+        phase = 1.0 - current
         result = float(np.exp(-5.0 * phase * phase))
 
         if result <= 1.0 : 
@@ -117,8 +117,8 @@ class SemiLoss(object):
         probs_u = torch.softmax(outputs_u, dim=1)
         Lx = -torch.mean(torch.sum(F.log_softmax(outputs_x, dim=1) * targets_x, dim=1))
         Lu = torch.mean((probs_u - targets_u)**2)
-        return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
-        #return Lx, Lu, opts.lambda_u * quad_rampup(epoch, final_epoch)
+        #return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
+        return Lx, Lu, opts.lambda_u * exponential_rampup(epoch, final_epoch)
 
 class WeightEMA(object):
     def __init__(self, model, ema_model, lr, alpha=0.999):
