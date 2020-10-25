@@ -2,7 +2,7 @@
 
 ## Introduction
 - This repository is for 2020 Fall CS492I CV project of Team 4.  
-- In this ```README.md``` we mainly explain about our **Main model with Highest Accuracy**.  
+- In this [```README.md```](https://github.com/HyeongshinYoon/CS492I_CV/blob/master/README.md) we mainly explain about our **Main model with Highest Accuracy**.  
 - You can check the explanation about *Best score model* or *Models that we tried but not used* in other branches.
 	### Members
 	    Hyunjin Kim 20170191
@@ -16,10 +16,12 @@
 |- main.py
 |- models.py
 |- setup.py
+|- README.md
+|- main_model.tar.gz
 </code></pre>
 ## Requirements
 ### NSML Installation
-<pre><code>1) Download the compressed file from the link below
+<pre><code>1) Download the compressed file from the [link](https://ai.nsml.navercorp.com/download) below
     https://ai.nsml.navercorp.com/download
 2) Decompress the file
     $ tar -xvzf < downloaded archive >
@@ -27,16 +29,19 @@
     $ export PATH=$PATH:< NSML_ROOT_PATH >
 </code></pre>
 ### Package Installation
-- All packages/libraries that we used is defined in ```setup.py```
+- All packages/libraries that we used is defined in [```setup.py```](https://github.com/HyeongshinYoon/CS492I_CV/blob/master/setup.py)
 
 ## Dataset
 - We use ```NAVER fashion_dataset``` for training and evaluation.
 ## Path to Pre-trained Model 
-- It is the path of **Main model with highest accuracy**
+- It is the session and checkpoint name of **Main model with highest accuracy**
 <pre><code>kaist004/fashion_dataset/829 MixSim_10w_best
 </code></pre>
+#### Unpack to pre-trained model from Github ( [```link```](https://github.com/HyeongshinYoon/CS492I_CV/blob/master/main_model.tar.gz) )
+<pre><code>$ git clone https://github.com/HyeongshinYoon/CS492I_CV.git
+$ tar -xzvf main_model.tar.gz</pre></code>
 
-#### Command to download pre-trained model
+#### Download pre-trained model from NSML
 <pre><code>nsml model pull kaist004/fashion_dataset/829 MixSim_10w_best ./
 </code></pre>
 
@@ -97,7 +102,7 @@
 
 ## Result
 - About MixSim(Main model)
-  - Use SimCLR pre-training & fine-tuning with contrastive learning loss 
+  - Use SimCLR pre-training & fine-tuning with contrastive loss 
   - Difference between Base Model
     - Data Augmentation : Add ColorJitter & GrayScale, Remove VerticalFlip
     - Dropout : 0.3 (Base Model : 0.5)
