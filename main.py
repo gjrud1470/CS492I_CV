@@ -21,7 +21,6 @@ import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
-#from torchlars import LARS
 
 import torchvision
 from torchvision import datasets, models, transforms
@@ -75,7 +74,6 @@ def linear_rampup(current, rampup_length):
         current = np.clip(current / rampup_length, 0.0, 1.0)
         return float(current)
 
-
 # Exponential rampup
 def exponential_rampup(current, rampup_length) : 
     if rampup_length == 0:
@@ -112,7 +110,7 @@ class SemiLoss(object):
         return Lx, Lu, opts.lambda_u * linear_rampup(epoch, final_epoch)
 
 ######################################################################
-# the normalized temperature-scaled cross entropy loss in SimCLR paper (called NT-Xent Loss)
+# the normalized temperature-scaled cross entropy loss in SimCLR v2 paper (called by NT-Xent Loss)
 # Noise Contrastive Estimation(NCE) Loss with cosine similarity
 ######################################################################
 class NCELoss(object):
@@ -467,7 +465,7 @@ def main():
             for w in range(5):
                 if (is_weighted_best[w]):
                     if IS_ON_NSML:
-                        nsml.save(opts.name + '_{}w_best'.format(2*(w+1)))
+                        nsml.save(opts.name + '_{}w_best'.format(5*(w+1)))
                     else:
                         torch.save(ema_model.state_dict(), os.path.join('runs', opts.name + '_{}w_best'.format(5*(w+1))))
             if (epoch + 1) % opts.save_epoch == 0:
