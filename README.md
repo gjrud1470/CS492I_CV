@@ -76,14 +76,14 @@
 > #### Optional Arguments
 > - Specific informations bellow is about the arguments that we used in our experiments.   
 > All arguments are defined in ```main.py```
-	<pre><code>--epochs				The number of training epochs (Default : 800)
-	> --batchsize				The size of batch (Default : 140)
-	> --pre_train_epoch		The number of pre-training epochs (Default : 400)
-	> --fine_tune_epoch 		The number of fine-tuning epochs (Default : 30)
-	> --seed					The random value of seed (Default : 123)
-	> --optimizer_lr 			The learning rate for optimizer (Default : 1e-2)
-	> --ema_optimizer_lr		The learning rate for EMA optimizer (Default : 1e-4)
-	> --gpu_ids				The name of GPUs (Default : '0')</code></pre>
+	<pre><code>--epochs		    The number of training epochs (Default : 800)
+	--batchsize		    The size of batch (Default : 140)
+	--pre_train_epoch		The number of pre-training epochs (Default : 400)
+	--fine_tune_epoch 		The number of fine-tuning epochs (Default : 30)
+	--seed			The random value of seed (Default : 123)
+	--optimizer_lr 		The learning rate for optimizer (Default : 1e-2)
+	--ema_optimizer_lr		The learning rate for EMA optimizer (Default : 1e-4)
+	--gpu_ids		    The name of GPUs (Default : '0')</code></pre>
 > 
 > ### 3. For Testing
 > <pre><code>nsml submit [Options] [SESSION_NAME] [CHECKPOINT]
