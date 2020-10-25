@@ -406,13 +406,12 @@ def main():
         # Set Optimizer
         # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
         # LARS is layer-wise adaptive rate scaling
-        # LARSWrapper helps stability with huge batch size.
+        # LARSWrapper, which is optimizer wraaper, helps stability with huge batch size.
         ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
         # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
-        base_optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
-        optimizer = LARSWrapper(base_optimizer, eta = 0.1)
+        optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
         # INSTANTIATE LOSS CLASS
