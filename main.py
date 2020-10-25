@@ -20,7 +20,6 @@ import torch_optimizer as t_optim
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
-import pytorch_warmup as warmup
 from pl_bolts.optimizers.lars_scheduling import LARSWrapper
 #from torchlars import LARS
 
@@ -407,11 +406,11 @@ def main():
         # Set Optimizer
         # Adamax and Yogi are optimization alogorithms based on Adam with more effective learning rate control.
         # LARS is layer-wise adaptive rate scaling
-        # LARSWrapper, which is optimizer wraaper, helps stability with huge batch size.
+        # LARSWrapper, which is optimizer wraaper that uses LARS algorithms, helps stability with huge batch size.
         ######################################################################
         # optimizer = optim.Adam(model.parameters(), lr=opts.lr, weight_decay=5e-4)
         # optimizer = optim.Adamax(model.parameters(), lr=0.002, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
-        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps= opts.optimizer_eps))
+        # optimizer = LARSWrapper(t_optim.Yogi(model.parameters(), lr=0.01, eps=opts.optimizer_eps))
         optimizer = t_optim.Yogi(model.parameters(), lr=opts.optimizer_lr, eps= opts.optimizer_eps)
         ema_optimizer= WeightEMA(model, ema_model, lr=opts.ema_optimizer_lr, alpha=opts.ema_decay)
 
@@ -425,11 +424,9 @@ def main():
         ######################################################################
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,  milestones=[50, 150], gamma=0.1)
         # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.5)
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps= 1e-3)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.9, eps=1e-3)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opts.steps_per_epoch * opts.epochs // 10)
 
-        warmup_scheduler = warmup.LinearWarmup(optimizer, warmup_period=opts.steps_per_epoch * 10)
-        
         # Train and Validation 
         best_acc = -1
         best_weight_acc = [-1] * 5
@@ -437,7 +434,7 @@ def main():
         for epoch in range(opts.start_epoch, opts.epochs + 1):
             # print('start training')
             if (need_pretraining and epoch <= opts.pre_train_epoch):
-                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim)
+                pre_loss = train_pre(opts, unlabel_loader, model, train_criterion_pre, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim)
                 print('epoch {:03d}/{:03d} finished, pre_loss: {:.3f}:pre-training'.format(epoch, opts.epochs, pre_loss))
                 continue
             elif (need_pretraining and epoch <= opts.pre_train_epoch + opts.fine_tune_epoch):
@@ -482,7 +479,7 @@ def main():
 ######################################################################
 # Pre-training method described in SimCLRv2 paper
 ######################################################################
-def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, warmup_scheduler, is_mixsim):
+def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, epoch, use_gpu, scheduler, is_mixsim):
     global global_step
     scaler = torch.cuda.amp.GradScaler()
     model.train()
@@ -523,7 +520,6 @@ def train_pre(opts, unlabel_loader, model, criterion, optimizer, ema_optimizer, 
             ema_optimizer.step()
             scaler.update()
             scheduler.step()
-            warmup_scheduler.dampen()
 
             if IS_ON_NSML and global_step % opts.log_interval == 0:
                 nsml.report(step=global_step)
