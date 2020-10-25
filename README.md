@@ -83,7 +83,8 @@
 	>> --seed					The random value of seed (Default : 123)
 	>> --optimizer_lr 			The learning rate for optimizer (Default : 1e-2)
 	>> --ema_optimizer_lr		The learning rate for EMA optimizer (Default : 1e-4)
-	>> --gpu_ids				The name of GPUs (Default : '0')</code></pre>
+	>> --gpu_ids				The name of GPUs (Default : '0')
+    >> </code></pre>
 > 
 > ### 3. For Testing
 > <pre><code>nsml submit [Options] [SESSION_NAME] [CHECKPOINT]
